@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+pub mod claude_config;
 pub mod db;
 pub mod keyring_store;
 
