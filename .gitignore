@@ -1,0 +1,34 @@
+# 依赖与构建产物
+node_modules/
+dist/
+target/
+.vite/
+
+# Tauri 产物
+src-tauri/target/
+src-tauri/gen/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 隔离工作区
+.worktrees/
+worktrees/
+
+# 本地配置（不含 API Key）
+.env.local
+.env.*.local
+
+# 日志
+*.log
+logs/
+
+# Tauri 安装文件
+.claude/settings.json.bak
