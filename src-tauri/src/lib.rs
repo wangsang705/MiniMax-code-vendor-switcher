@@ -12,7 +12,6 @@ pub fn run() {
     use tauri::Manager;
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir().expect("no app data dir");
             std::fs::create_dir_all(&app_data).ok();

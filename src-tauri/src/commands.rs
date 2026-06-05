@@ -67,8 +67,6 @@ pub fn create_vendor(
 ) -> Result<VendorInstance, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let keyring_key = format!("vendor:{}", id);
-    keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &input.api_key)
-        .map_err(|e| format!("Keyring 写入失败: {}", e))?;
 
     let v = VendorInstance {
         id: id.clone(),
@@ -76,12 +74,25 @@ pub fn create_vendor(
         name: input.name,
         api_base: input.api_base,
         model: input.model,
-        keyring_key,
+        keyring_key: keyring_key.clone(),
         created_at: now_ts(),
         updated_at: now_ts(),
     };
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::insert_vendor(&conn, &v).map_err(|e| e.to_string())?;
+
+    // 1) Insert DB row first
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::insert_vendor(&conn, &v).map_err(|e| e.to_string())?;
+    }
+
+    // 2) Write keyring; on failure roll back DB row
+    if let Err(e) = keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &input.api_key) {
+        if let Ok(conn) = state.db.lock() {
+            let _ = db::delete_vendor(&conn, &id);
+        }
+        return Err(format!("Keyring 写入失败: {}", e));
+    }
+
     Ok(v)
 }
 
@@ -125,8 +136,21 @@ pub fn delete_vendor(state: State<AppState>, id: String) -> Result<(), String> {
     let v = db::get_vendor(&conn, &id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "vendor not found".to_string())?;
-    let _ = keyring_store::delete_key(KEYRING_SERVICE, &v.keyring_key);
+
+    // 1) Delete DB row first
     db::delete_vendor(&conn, &id).map_err(|e| e.to_string())?;
+
+    // 2) Best-effort keyring cleanup; report failure but don't fail the operation
+    if let Err(e) = keyring_store::delete_key(KEYRING_SERVICE, &v.keyring_key) {
+        return Err(format!("厂商已删除，但 Keyring 清理失败（需手动移除 vendor:{}）: {}", v.id, e));
+    }
+
+    // Clear active_vendor if it pointed to this one
+    let _ = conn.execute(
+        "DELETE FROM settings WHERE key = 'active_vendor' AND value = ?1",
+        [&id],
+    );
+
     Ok(())
 }
 
