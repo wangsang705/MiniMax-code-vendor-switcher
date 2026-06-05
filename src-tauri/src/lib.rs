@@ -2,6 +2,7 @@
 pub mod claude_config;
 pub mod db;
 pub mod keyring_store;
+pub mod launcher;
 pub mod vendor;
 
 #[tauri::command]
