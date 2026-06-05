@@ -1,15 +1,12 @@
 # MiniMax Code Vendor Switcher
 
-一个轻量级跨平台桌面工具，让用户在多个 LLM 厂商（DeepSeek / Kimi / 智谱 / Qwen 等）之间一键切换，切换后启动 MiniMax Code 即可使用所选厂商的模型。
+> 一键在 DeepSeek / Kimi / 智谱 GLM / Qwen 等多家 LLM 厂商之间切换，切换后启动 MiniMax Code 即可使用所选厂商的模型。
 
-## 快速开始
+## 状态
 
-参见 `DESIGN.md` 中的设计文档。
+🚧 脚手架阶段。完整使用说明与构建命令将在 T15/T16 补充。
 
-## 开发
+## 文档
 
-```bash
-# 待 Tauri 项目脚手架生成后
-pnpm install
-pnpm tauri dev
-```
+- `DESIGN.md` - 设计文档
+- `docs/plans/2026-06-05-MiniMax-code-vendor-switcher-implementation.md` - 实现计划
