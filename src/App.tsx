@@ -1,51 +1,47 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from 'react';
+import { VendorList } from './components/VendorList';
+import { VendorDialog } from './components/VendorDialog';
+import { Button } from './components/ui/button';
+import { api, VendorInstance } from './api';
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<VendorInstance | null>(null);
+  const [claudeInstalled, setClaudeInstalled] = useState<boolean | null>(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => { api.isClaudeInstalled().then(setClaudeInstalled); }, []);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-3xl mx-auto">
+        <header className="flex justify-between items-center mb-6">
+          <h1 className="text-xl font-bold">⚡ MiniMax Code Vendor Switcher</h1>
+          <div className="flex gap-2">
+            <Button onClick={() => api.launchClaude()} disabled={claudeInstalled === false}>
+              🚀 启动 MiniMax Code
+            </Button>
+          </div>
+        </header>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+        {claudeInstalled === false && (
+          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm">
+            未检测到 MiniMax Code CLI，请先安装后再启动。
+          </div>
+        )}
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+        <VendorList
+          onAdd={() => { setEditing(null); setDialogOpen(true); }}
+          onEdit={(v) => { setEditing(v); setDialogOpen(true); }}
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      </div>
+
+      {dialogOpen && (
+        <VendorDialog
+          editing={editing}
+          onClose={() => setDialogOpen(false)}
+          onSaved={() => setDialogOpen(false)}
+        />
+      )}
+    </div>
   );
 }
-
-export default App;
