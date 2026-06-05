@@ -3,7 +3,17 @@ import { api, VendorInstance } from '../api';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 
-export function VendorList({ onAdd, onEdit }: { onAdd: () => void; onEdit: (v: VendorInstance) => void }) {
+export function VendorList({
+  onAdd,
+  onEdit,
+  onChanged,
+  refreshKey,
+}: {
+  onAdd: () => void;
+  onEdit: (v: VendorInstance) => void;
+  onChanged?: () => void;
+  refreshKey: number;
+}) {
   const [vendors, setVendors] = useState<VendorInstance[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -19,12 +29,18 @@ export function VendorList({ onAdd, onEdit }: { onAdd: () => void; onEdit: (v: V
     }
   };
 
-  useEffect(() => { refresh(); }, []);
+  // 跟随父组件传入的 refreshKey 变化触发重新拉取，
+  // 这样 dialog 保存/删除/应用成功后父组件自增 listKey 即可通知子组件刷新。
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   const apply = async (id: string) => {
     try {
       await api.applyVendor(id);
       await refresh();
+      onChanged?.();
     } catch (e) {
       alert('切换失败: ' + e);
     }
@@ -35,6 +51,7 @@ export function VendorList({ onAdd, onEdit }: { onAdd: () => void; onEdit: (v: V
     try {
       await api.deleteVendor(id);
       await refresh();
+      onChanged?.();
     } catch (e) {
       alert('删除失败: ' + e);
     }
