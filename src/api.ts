@@ -106,4 +106,13 @@ export const api = {
   applyBinding: (tool_id: string, provider_id: string, model_id: string, api_key: string) =>
     invoke<void>('apply_binding', { toolId: tool_id, providerId: provider_id, modelId: model_id, apiKey: api_key }),
   launchTool: (tool_id: string) => invoke<number>('launch_tool', { toolId: tool_id }),
+
+  // -- AI 对话 --
+  chatSend: (input: {
+    messages: { role: string; content: string }[];
+    api_base: string;
+    api_key: string;
+    model: string;
+    anthropic_mode: boolean;
+  }) => invoke<{ content: string; model: string }>('chat_send', { input }),
 };

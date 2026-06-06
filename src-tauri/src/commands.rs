@@ -451,3 +451,38 @@ pub fn launch_tool(state: State<AppState>, tool_id: String) -> Result<u32, Strin
 
     Err(format!("{} 没有配置启动方式", tool.name))
 }
+
+// ===================================================================
+// AI 对话命令
+// ===================================================================
+
+#[derive(serde::Deserialize)]
+pub struct ChatInput {
+    pub messages: Vec<ChatMsgInput>,
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
+    pub anthropic_mode: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ChatMsgInput {
+    pub role: String,
+    pub content: String,
+}
+
+#[tauri::command]
+pub async fn chat_send(input: ChatInput) -> Result<crate::llm_chat::ChatResponse, String> {
+    let req = crate::llm_chat::ChatRequest {
+        messages: input.messages.into_iter().map(|m| crate::llm_chat::ChatMessage {
+            role: m.role,
+            content: m.content,
+        }).collect(),
+        api_base: input.api_base,
+        api_key: input.api_key,
+        model: input.model,
+        anthropic_mode: input.anthropic_mode,
+        max_tokens: Some(4096),
+    };
+    crate::llm_chat::chat_complete(req).await
+}

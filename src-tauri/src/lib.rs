@@ -3,6 +3,7 @@ pub mod db;
 pub mod detector;
 pub mod keyring_store;
 pub mod launcher;
+pub mod llm_chat;
 pub mod minimax_config;
 pub mod vendor;
 
@@ -54,6 +55,7 @@ pub fn run() {
             commands::delete_provider,
             commands::apply_binding,
             commands::launch_tool,
+            commands::chat_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -267,52 +267,107 @@ function Badge({ children }: { children: string }) {
 function AIChatPanel() {
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
   const [input, setInput] = useState('');
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [models, setModels] = useState<Model[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [apiKey, setApiKey] = useState('');
+  const [sending, setSending] = useState(false);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
-    setMessages(prev => [...prev, { role: 'user', content: input }]);
-    setMessages(prev => [...prev, {
-      role: 'assistant',
-      content: '👋 AI 助手功能开发中！即将支持：\n\n• 流式对话\n• 使用你配置的模型\n• 一键安装未检测到的工具\n• 解答技术问题',
-    }]);
-    setInput('');
+  useEffect(() => {
+    Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => {
+      setProviders(p);
+      setModels(m);
+    }).catch(() => {});
+  }, []);
+
+  const onProviderChange = (pid: string) => {
+    setSelectedProvider(pid);
+    const m = models.filter(x => x.provider_id === pid);
+    if (m.length > 0) setSelectedModel(m[0].id);
   };
+
+  const handleSend = async () => {
+    if (!input.trim() || !selectedProvider || !selectedModel || !apiKey) return;
+    const provider = providers.find(p => p.id === selectedProvider);
+    const model = models.find(m => m.id === selectedModel);
+    if (!provider || !model) return;
+
+    const userMsg = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setSending(true);
+
+    try {
+      const resp = await api.chatSend({
+        messages: [...messages, userMsg],
+        api_base: provider.api_base,
+        api_key: apiKey,
+        model: model.model_id,
+        anthropic_mode: provider.anthropic_mode,
+      });
+      setMessages(prev => [...prev, { role: 'assistant', content: resp.content }]);
+    } catch (e) {
+      setMessages(prev => [...prev, { role: 'assistant', content: '❌ 请求失败: ' + e }]);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const availModels = models.filter(m => m.provider_id === selectedProvider);
+  const ready = selectedProvider && selectedModel && apiKey;
 
   return (
     <div className="max-w-3xl mx-auto flex flex-col h-[calc(100vh-12rem)]">
+      <div className="flex gap-3 mb-4 p-3 bg-white border rounded-lg">
+        <select value={selectedProvider} onChange={e => onProviderChange(e.target.value)}
+          className="flex-1 border rounded px-2 py-1.5 text-sm bg-white">
+          <option value="">选择厂商...</option>
+          {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select value={selectedModel} onChange={e => setSelectedModel(e.target.value)}
+          className="flex-1 border rounded px-2 py-1.5 text-sm bg-white" disabled={!selectedProvider}>
+          <option value="">选择模型...</option>
+          {availModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+          placeholder="API Key" className="flex-1 border rounded px-2 py-1.5 text-sm" />
+      </div>
+
       <div className="flex-1 overflow-y-auto space-y-3 mb-4">
         {messages.length === 0 && (
           <div className="text-center py-16 text-gray-400">
             <p className="text-3xl mb-3">💬</p>
-            <p className="text-sm font-medium">AI 助手</p>
-            <p className="text-xs mt-1">配置好厂商和模型后即可对话</p>
+            <p className="text-sm font-medium">AI 助手已就绪</p>
+            <p className="text-xs mt-1">选择厂商/模型并输入 API Key 后即可对话</p>
           </div>
         )}
         {messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[70%] rounded-lg px-4 py-2.5 text-sm leading-relaxed ${
-              msg.role === 'user'
-                ? 'bg-blue-500 text-white'
-                : 'bg-white border text-gray-800'
+              msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white border text-gray-800'
             }`}>
               {msg.content}
             </div>
           </div>
         ))}
+        {sending && (
+          <div className="flex justify-start">
+            <div className="bg-white border rounded-lg px-4 py-2.5 text-sm text-gray-400">⏳ 正在思考...</div>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-2 border-t pt-4">
-        <input
-          type="text"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSend()}
-          placeholder="输入问题..."
-          className="flex-1 border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        <input type="text" value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !sending && handleSend()}
+          disabled={!ready || sending}
+          placeholder={!ready ? '请先选择厂商、模型并输入 API Key' : '输入问题...'}
+          className="flex-1 border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
         />
-        <button onClick={handleSend}
-          className="px-5 py-2.5 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600">
-          发送
+        <button onClick={handleSend} disabled={!ready || sending}
+          className="px-5 py-2.5 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 disabled:bg-gray-300">
+          {sending ? '发送中...' : '发送'}
         </button>
       </div>
     </div>
