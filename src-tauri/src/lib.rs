@@ -1,3 +1,4 @@
+pub mod agent_adapters;
 pub mod commands;
 pub mod db;
 pub mod detector;

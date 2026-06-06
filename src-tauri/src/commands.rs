@@ -419,6 +419,19 @@ fn apply_config_for_tool(
                 .map_err(|e| e.to_string())?;
             std::fs::write(&path, content).map_err(|e| e.to_string())?;
         }
+        // -- Agent 适配器 --
+        "openclaw" => {
+            crate::agent_adapters::apply_openclaw(&provider.name, &provider.api_base, provider_id, api_key)
+                .map_err(|e| format!("OpenClaw 配置写入失败: {}", e))?;
+        }
+        "hermes-agent" => {
+            crate::agent_adapters::apply_hermes(provider_id, &provider.api_base, provider_id, api_key)
+                .map_err(|e| format!("Hermes Agent 配置写入失败: {}", e))?;
+        }
+        "nanobot" => {
+            crate::agent_adapters::apply_nanobot(provider_id, &provider.api_base, provider_id, api_key)
+                .map_err(|e| format!("Nanobot 配置写入失败: {}", e))?;
+        }
         _ => return Err(format!("暂不支持的工具: {}", tool_id)),
     }
     Ok(())
