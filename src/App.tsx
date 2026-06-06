@@ -134,16 +134,13 @@ function ToolHubPanel() {
   );
 }
 
-// ===== 绑定弹窗（自动使用厂商已保存的 Key） =====
+// ===== 绑定弹窗（纯选择，无 Key 输入） =====
 function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void; onDone: () => void }) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [selProvider, setSelProvider] = useState('');
   const [selModel, setSelModel] = useState('');
-  const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
-  const [hasStoredKey, setHasStoredKey] = useState(false);
-  const [firstLoad, setFirstLoad] = useState(true);
 
   useEffect(() => {
     Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => {
@@ -152,27 +149,21 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
         setSelProvider(p[0].id);
         const avail = m.filter(x => x.provider_id === p[0].id);
         if (avail.length > 0) setSelModel(avail[0].id);
-        // 尝试获取第一个厂商的已保存 Key
-        api.getProviderKey(p[0].id).then(k => { setApiKey(k); setHasStoredKey(true); }).catch(() => { setHasStoredKey(false); });
       }
-      setFirstLoad(false);
     });
   }, []);
 
-  const onProviderChange = async (pid: string) => {
+  const onProviderChange = (pid: string) => {
     setSelProvider(pid);
     const avail = models.filter(m => m.provider_id === pid);
     if (avail.length > 0) setSelModel(avail[0].id);
-    try { const k = await api.getProviderKey(pid); setApiKey(k); setHasStoredKey(true); }
-    catch { setApiKey(''); setHasStoredKey(false); }
   };
 
   const handleSave = async () => {
-    if (!selProvider || !selModel || firstLoad) return;
-    if (!hasStoredKey && !apiKey) return;
+    if (!selProvider || !selModel) return;
     setSaving(true);
     try {
-      await api.applyBinding(tool.id, selProvider, selModel, hasStoredKey ? undefined : apiKey);
+      await api.applyBinding(tool.id, selProvider, selModel);
       onDone();
     } catch (e) { alert('绑定失败: ' + e); }
     finally { setSaving(false); }
@@ -182,12 +173,12 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-slate-800 mb-1">为 {tool.name} 绑定模型</h3>
-        <p className="text-xs text-slate-400 mb-5">厂商和模型已在模型中心配置，选择后即可绑定。</p>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-slate-800 mb-1">为 {tool.name} 选择模型</h3>
+        <p className="text-xs text-slate-400 mb-5">从模型中心已配置好的方案中选择。</p>
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商（可在模型中心添加和管理）</label>
+            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商</label>
             <select value={selProvider} onChange={e => onProviderChange(e.target.value)}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="">选择厂商...</option>
@@ -202,19 +193,10 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
               {availModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </div>
-          {!hasStoredKey ? (
-            <div>
-              <label className="text-xs font-medium text-slate-500 mb-1 block">API Key（首次绑定需输入，会自动保存）</label>
-              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-                placeholder="sk-..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-          ) : (
-            <p className="text-xs text-emerald-600">✅ 已保存 API Key，可直接绑定</p>
-          )}
         </div>
         <div className="flex justify-end gap-2 mt-6">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
-          <button onClick={handleSave} disabled={saving || !selProvider || !selModel || (!hasStoredKey && !apiKey)}
+          <button onClick={handleSave} disabled={saving || !selProvider || !selModel}
             className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300 transition-colors">
             {saving ? '绑定中...' : '确认绑定'}
           </button>

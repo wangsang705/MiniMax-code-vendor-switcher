@@ -109,8 +109,8 @@ export const api = {
   createProvider: (input: { id: string; name: string; api_base: string; anthropic_mode: boolean; api_key?: string }) =>
     invoke<Provider>('create_provider', { input }),
   deleteProvider: (id: string) => invoke<void>('delete_provider', { id }),
-  applyBinding: (tool_id: string, provider_id: string, model_id: string, api_key?: string) =>
-    invoke<void>('apply_binding', { toolId: tool_id, providerId: provider_id, modelId: model_id, apiKey: api_key || null }),
+  applyBinding: (tool_id: string, provider_id: string, model_id: string) =>
+    invoke<void>('apply_binding', { toolId: tool_id, providerId: provider_id, modelId: model_id }),
   launchTool: (tool_id: string) => invoke<number>('launch_tool', { toolId: tool_id }),
 
   // -- AI 对话 --

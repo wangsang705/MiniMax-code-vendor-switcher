@@ -154,20 +154,16 @@ pub fn delete_provider(state: State<AppState>, id: String) -> Result<(), String>
 
 // 绑定：使用厂商已保存的 Key（如果存在），否则用前端传入的
 #[tauri::command]
-pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: String, model_id: String, api_key: Option<String>) -> Result<(), String> {
+pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: String, model_id: String) -> Result<(), String> {
     let model_name = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let models = db::list_models_by_provider(&conn, &provider_id).map_err(|e| e.to_string())?;
         models.into_iter().find(|m| m.id == model_id).map(|m| m.model_id).ok_or_else(|| "模型未找到".to_string())?
     };
-
-    // 获取 API Key：优先用传入的，否则从 keyring 读取
-    let api_key = if let Some(key) = &api_key { if !key.is_empty() { key.clone() } else { fetch_provider_key(&provider_id)? } } else { fetch_provider_key(&provider_id)? };
-
+    let api_key = fetch_provider_key(&provider_id)?;
     let binding_id = uuid::Uuid::new_v4().to_string();
     let keyring_key = format!("binding:{}", binding_id);
     keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &api_key).map_err(|e| format!("Keyring 写入失败: {}", e))?;
-
     let now = now_ts();
     let binding = db::ToolBinding { id: binding_id.clone(), tool_id: tool_id.clone(), provider_id: provider_id.clone(), model_id: model_id.clone(), keyring_key: Some(keyring_key), is_active: true, created_at: now, updated_at: now };
     { let conn = state.db.lock().map_err(|e| e.to_string())?; db::set_active_binding(&conn, &binding_id, &tool_id).map_err(|e| e.to_string())?; db::upsert_binding(&conn, &binding).map_err(|e| e.to_string())?; }
