@@ -469,13 +469,14 @@ function EditProviderDialog({ provider, onClose, onDone }: { provider: Provider;
   const [name, setName] = useState(provider.name);
   const [apiBase, setApiBase] = useState(provider.api_base);
   const [anthropicMode, setAnthropicMode] = useState(provider.anthropic_mode);
+  const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     if (!name || !apiBase) return;
     setSaving(true);
     try {
-      await api.updateProvider({ id: provider.id, name, api_base: apiBase, anthropic_mode: anthropicMode });
+      await api.updateProvider({ id: provider.id, name, api_base: apiBase, anthropic_mode: anthropicMode, api_key: apiKey || undefined });
       onDone();
     } catch (e) { alert('编辑失败: ' + e); }
     finally { setSaving(false); }
@@ -486,6 +487,11 @@ function EditProviderDialog({ provider, onClose, onDone }: { provider: Provider;
       <div className="space-y-4">
         <Field label="名称" value={name} onChange={setName} />
         <Field label="API Base URL" value={apiBase} onChange={setApiBase} />
+        <div>
+          <label className="text-xs font-medium text-slate-500 mb-1 block">API Key（留空不修改）</label>
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+            placeholder="输入新 Key 或留空" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={anthropicMode} onChange={e => setAnthropicMode(e.target.checked)} className="rounded border-slate-300" />
           Anthropic 兼容模式
