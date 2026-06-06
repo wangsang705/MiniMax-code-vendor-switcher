@@ -143,7 +143,7 @@ pub fn create_provider(state: State<AppState>, input: CreateProviderInput) -> Re
     let p = db::Provider { id: input.id.clone(), name: input.name, api_base: input.api_base, anthropic_mode: input.anthropic_mode, created_at: now_ts(), updated_at: now_ts() };
     let conn = state.db.lock().map_err(|e| e.to_string())?; db::insert_provider(&conn, &p).map_err(|e| e.to_string())?;
     // 保存 API Key（如果有）
-    if let Some(key) = &input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, input.id), key).map_err(|e| format!("Keyring 写入失败: {}", e)).ok(); } }
+    if let Some(key) = &input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, input.id), key).map_err(|e| format!("Keyring 写入失败: {}", e))?; } }
     Ok(p)
 }
 
@@ -227,7 +227,7 @@ pub fn update_provider(state: State<AppState>, input: CreateProviderInput) -> Re
     let mut provider = db::list_providers(&conn).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == input.id).ok_or_else(|| "厂商未找到".to_string())?;
     provider.name = input.name; provider.api_base = input.api_base; provider.anthropic_mode = input.anthropic_mode; provider.updated_at = now_ts();
     db::update_provider(&conn, &provider).map_err(|e| e.to_string())?;
-    if let Some(key) = &input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, input.id), key).map_err(|e| format!("Keyring 写入失败: {}", e)).ok(); } }
+    if let Some(key) = &input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, input.id), key).map_err(|e| format!("Keyring 写入失败: {}", e))?; } }
     Ok(provider)
 }
 
