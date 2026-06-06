@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use tauri::State;
 
 const KEYRING_SERVICE: &str = "MiniMax-vendor-switcher";
-const KEYRING_PROVIDER_PREFIX: &str = "provider_key:";
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -140,10 +139,8 @@ pub struct CreateProviderInput { pub id: String, pub name: String, pub api_base:
 
 #[tauri::command]
 pub fn create_provider(state: State<AppState>, input: CreateProviderInput) -> Result<db::Provider, String> {
-    let p = db::Provider { id: input.id.clone(), name: input.name, api_base: input.api_base, anthropic_mode: input.anthropic_mode, created_at: now_ts(), updated_at: now_ts() };
+    let p = db::Provider { id: input.id.clone(), name: input.name, api_base: input.api_base, anthropic_mode: input.anthropic_mode, api_key: input.api_key.clone(), created_at: now_ts(), updated_at: now_ts() };
     let conn = state.db.lock().map_err(|e| e.to_string())?; db::insert_provider(&conn, &p).map_err(|e| e.to_string())?;
-    // 保存 API Key（如果有）
-    if let Some(key) = &input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, input.id), key).map_err(|e| format!("Keyring 写入失败: {}", e))?; } }
     Ok(p)
 }
 
@@ -152,7 +149,6 @@ pub fn delete_provider(state: State<AppState>, id: String) -> Result<(), String>
     let conn = state.db.lock().map_err(|e| e.to_string())?; db::delete_provider(&conn, &id).map_err(|e| e.to_string())
 }
 
-// 绑定：使用厂商已保存的 Key（如果存在），否则用前端传入的
 #[tauri::command]
 pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: String, model_id: String) -> Result<(), String> {
     let model_name = {
@@ -160,7 +156,7 @@ pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: Strin
         let models = db::list_models_by_provider(&conn, &provider_id).map_err(|e| e.to_string())?;
         models.into_iter().find(|m| m.id == model_id).map(|m| m.model_id).ok_or_else(|| "模型未找到".to_string())?
     };
-    let api_key = fetch_provider_key(&provider_id)?;
+    let api_key = fetch_provider_key(&state, &provider_id)?;
     let binding_id = uuid::Uuid::new_v4().to_string();
     let keyring_key = format!("binding:{}", binding_id);
     keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &api_key).map_err(|e| format!("Keyring 写入失败: {}", e))?;
@@ -171,8 +167,13 @@ pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: Strin
     Ok(())
 }
 
-fn fetch_provider_key(provider_id: &str) -> Result<String, String> {
-    keyring_store::get_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, provider_id)).map_err(|_| "该厂商未保存 API Key，请在绑定或编辑厂商时输入".to_string())
+fn fetch_provider_key(state: &State<AppState>, provider_id: &str) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let providers = db::list_providers(&conn).map_err(|e| e.to_string())?;
+    providers.into_iter().find(|p| p.id == provider_id)
+        .and_then(|p| p.api_key)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "该厂商未保存 API Key，请在模型中心编辑厂商并填写 API Key".to_string())
 }
 
 fn apply_config_for_tool(state: &State<AppState>, tool_id: &str, provider_id: &str, model_name: &str, api_key: &str) -> Result<(), String> {
@@ -226,8 +227,8 @@ pub fn update_provider(state: State<AppState>, input: CreateProviderInput) -> Re
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut provider = db::list_providers(&conn).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == input.id).ok_or_else(|| "厂商未找到".to_string())?;
     provider.name = input.name; provider.api_base = input.api_base; provider.anthropic_mode = input.anthropic_mode; provider.updated_at = now_ts();
+    if let Some(key) = &input.api_key { if !key.is_empty() { provider.api_key = Some(key.clone()); } }
     db::update_provider(&conn, &provider).map_err(|e| e.to_string())?;
-    if let Some(key) = &input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &format!("{}{}", KEYRING_PROVIDER_PREFIX, input.id), key).map_err(|e| format!("Keyring 写入失败: {}", e))?; } }
     Ok(provider)
 }
 
@@ -261,4 +262,4 @@ pub fn get_install_info(tool_id: String) -> Result<Option<crate::installer::Inst
 pub fn install_tool(tool_id: String) -> Result<String, String> { crate::installer::run_install(&tool_id) }
 
 #[tauri::command]
-pub fn get_provider_key(provider_id: String) -> Result<String, String> { fetch_provider_key(&provider_id) }
+pub fn get_provider_key(state: State<AppState>, provider_id: String) -> Result<String, String> { fetch_provider_key(&state, &provider_id) }

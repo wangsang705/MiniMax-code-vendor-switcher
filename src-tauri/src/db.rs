@@ -21,13 +21,14 @@ pub struct Tool {
     pub updated_at: i64,
 }
 
-/// 厂商/供应商
+/// 厂商/供应商（api_key 直接存数据库，避免 keyring 问题）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Provider {
     pub id: String,
     pub name: String,
     pub api_base: String,
-    pub anthropic_mode: bool,    // 是否 Anthropic 兼容格式
+    pub anthropic_mode: bool,
+    pub api_key: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -80,6 +81,7 @@ pub struct VendorInstance {
 pub fn init_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch("ALTER TABLE providers ADD COLUMN api_key TEXT;").ok();
 
     conn.execute_batch(
         r#"
@@ -105,6 +107,7 @@ pub fn init_db(path: &Path) -> Result<Connection> {
             name TEXT NOT NULL,
             api_base TEXT NOT NULL,
             anthropic_mode INTEGER NOT NULL DEFAULT 1,
+            api_key TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -248,8 +251,8 @@ fn seed_default_providers(conn: &Connection) -> Result<()> {
 
     for (id, name, api_base, anthropic_mode) in defaults {
         conn.execute(
-            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, api_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
             rusqlite::params![id, name, api_base, anthropic_mode as i32, now, now],
         )?;
     }
@@ -289,8 +292,8 @@ fn migrate_from_v1(conn: &Connection) -> Result<()> {
     for row in rows.flatten() {
         let pid = row.preset_id.clone().unwrap_or_else(|| row.name.to_lowercase().replace(' ', "-"));
         conn.execute(
-            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, api_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 1, NULL, ?4, ?5)",
             rusqlite::params![pid, row.name, row.api_base, row.created_at, row.updated_at],
         )?;
         let mid = format!("{}/{}", pid, row.model);
@@ -348,14 +351,14 @@ fn map_tool(row: &rusqlite::Row) -> rusqlite::Result<Tool> {
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, api_base, anthropic_mode, created_at, updated_at
+        "SELECT id, name, api_base, anthropic_mode, api_key, created_at, updated_at
          FROM providers ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Provider {
             id: row.get(0)?, name: row.get(1)?, api_base: row.get(2)?,
-            anthropic_mode: row.get::<_, i32>(3)? != 0,
-            created_at: row.get(4)?, updated_at: row.get(5)?,
+            anthropic_mode: row.get::<_, i32>(3)? != 0, api_key: row.get(4)?,
+            created_at: row.get(5)?, updated_at: row.get(6)?,
         })
     })?;
     let mut out = Vec::new();
@@ -367,9 +370,9 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
 
 pub fn insert_provider(conn: &Connection, p: &Provider) -> Result<()> {
     conn.execute(
-        "INSERT INTO providers (id, name, api_base, anthropic_mode, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.created_at, p.updated_at],
+        "INSERT INTO providers (id, name, api_base, anthropic_mode, api_key, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.api_key, p.created_at, p.updated_at],
     )?;
     Ok(())
 }
@@ -381,8 +384,8 @@ pub fn delete_provider(conn: &Connection, id: &str) -> Result<()> {
 
 pub fn update_provider(conn: &Connection, p: &Provider) -> Result<()> {
     conn.execute(
-        "UPDATE providers SET name=?2, api_base=?3, anthropic_mode=?4, updated_at=?5 WHERE id=?1",
-        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.updated_at],
+        "UPDATE providers SET name=?2, api_base=?3, anthropic_mode=?4, api_key=?5, updated_at=?6 WHERE id=?1",
+        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.api_key, p.updated_at],
     )?;
     Ok(())
 }
