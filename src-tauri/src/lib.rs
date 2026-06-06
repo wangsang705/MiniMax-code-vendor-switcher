@@ -1,10 +1,15 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 pub mod commands;
 pub mod db;
+pub mod detector;
 pub mod keyring_store;
 pub mod launcher;
 pub mod minimax_config;
 pub mod vendor;
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    #[cfg(windows)] { std::env::var_os("USERPROFILE").map(std::path::PathBuf::from) }
+    #[cfg(not(windows))] { std::env::var_os("HOME").map(std::path::PathBuf::from) }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,7 +23,6 @@ pub fn run() {
             let db_path = app_data.join("vendors.db");
             let conn = db::init_db(&db_path).expect("init db");
 
-            // MiniMax Code 桌面版 config.yaml 路径
             let home = dirs_home().expect("no home");
             let minimax_dir = home.join(".minimax");
             std::fs::create_dir_all(&minimax_dir).ok();
@@ -31,6 +35,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // 旧命令（向后兼容）
             commands::list_vendors,
             commands::list_presets,
             commands::create_vendor,
@@ -40,18 +45,16 @@ pub fn run() {
             commands::get_active_vendor,
             commands::launch_claude_cmd,
             commands::is_claude_installed,
+            // 新命令
+            commands::detect_installed_tools,
+            commands::list_tools,
+            commands::list_providers,
+            commands::list_models,
+            commands::create_provider,
+            commands::delete_provider,
+            commands::apply_binding,
+            commands::launch_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-fn dirs_home() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(std::path::PathBuf::from)
-    }
 }

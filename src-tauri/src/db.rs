@@ -1,7 +1,68 @@
 use rusqlite::{Connection, Result};
-use std::path::Path;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
+// ===== 数据模型 =====
+
+/// 工具平台（Claude Code, MiniMax Code, Codex CLI 等）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Tool {
+    pub id: String,
+    pub name: String,
+    pub category: String,        // 'cli', 'desktop', 'agent'
+    pub config_path: Option<String>,
+    pub config_format: String,   // 'json', 'yaml', 'json5', 'env'
+    pub launch_command: Option<String>,
+    pub launch_path: Option<String>,
+    pub env_keys_json: Option<String>,
+    pub detection_path_cmds: String, // JSON: ["claude", "minimax", ...]
+    pub detection_files: String,     // JSON: 桌面端检测路径
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 厂商/供应商
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Provider {
+    pub id: String,
+    pub name: String,
+    pub api_base: String,
+    pub anthropic_mode: bool,    // 是否 Anthropic 兼容格式
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 模型
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Model {
+    pub id: String,
+    pub provider_id: String,
+    pub name: String,
+    pub model_id: String,
+    pub context_length: i64,
+    pub max_output: i64,
+    pub supports_attachment: bool,
+    pub supports_reasoning: bool,
+    pub supports_tool_call: bool,
+    pub supports_vision: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 工具-厂商绑定
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolBinding {
+    pub id: String,
+    pub tool_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub keyring_key: Option<String>,
+    pub is_active: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 旧版 VendorInstance（用于迁移）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VendorInstance {
     pub id: String,
@@ -14,10 +75,79 @@ pub struct VendorInstance {
     pub updated_at: i64,
 }
 
+// ===== 数据库初始化与迁移 =====
+
 pub fn init_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
     conn.execute_batch(
         r#"
+        -- 工具平台表
+        CREATE TABLE IF NOT EXISTS tools (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'cli',
+            config_path TEXT,
+            config_format TEXT NOT NULL DEFAULT 'json',
+            launch_command TEXT,
+            launch_path TEXT,
+            env_keys_json TEXT DEFAULT '[]',
+            detection_path_cmds TEXT NOT NULL DEFAULT '[]',
+            detection_files TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        -- 厂商表
+        CREATE TABLE IF NOT EXISTS providers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            api_base TEXT NOT NULL,
+            anthropic_mode INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        -- 模型表
+        CREATE TABLE IF NOT EXISTS models (
+            id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            context_length INTEGER NOT NULL DEFAULT 128000,
+            max_output INTEGER NOT NULL DEFAULT 8192,
+            supports_attachment INTEGER NOT NULL DEFAULT 0,
+            supports_reasoning INTEGER NOT NULL DEFAULT 1,
+            supports_tool_call INTEGER NOT NULL DEFAULT 1,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (provider_id) REFERENCES providers(id)
+        );
+
+        -- 工具-厂商绑定表
+        CREATE TABLE IF NOT EXISTS tool_bindings (
+            id TEXT PRIMARY KEY,
+            tool_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            keyring_key TEXT,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (tool_id) REFERENCES tools(id),
+            FOREIGN KEY (provider_id) REFERENCES providers(id),
+            FOREIGN KEY (model_id) REFERENCES models(id)
+        );
+
+        -- 保留旧 settings 表做迁移
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        -- 保留旧的 vendors 表做迁移
         CREATE TABLE IF NOT EXISTS vendors (
             id TEXT PRIMARY KEY,
             preset_id TEXT,
@@ -28,13 +158,359 @@ pub fn init_db(path: &Path) -> Result<Connection> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
         "#,
     )?;
+
+    migrate_from_v1(&conn).ok();
+    seed_default_tools(&conn).ok();
+    seed_default_providers(&conn).ok();
+
     Ok(conn)
+}
+
+// ===== 数据初始化 =====
+
+fn seed_default_tools(conn: &Connection) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let defaults = vec![
+        ("claude-code-cli", "Claude Code CLI", "cli",
+         Some("~/.claude/settings.json"), "json",
+         Some("claude"), None,
+         r#"["claude"]"#, r#"[]"#),
+        ("minimax-code-cli", "MiniMax Code CLI", "cli",
+         Some("~/.minimax/config.yaml"), "yaml",
+         Some("minimax"), None,
+         r#"["minimax"]"#, r#"[]"#),
+        ("minimax-code-desktop", "MiniMax Code 桌面版", "desktop",
+         Some("~/.minimax/config.yaml"), "yaml",
+         None,
+         Some("C:\\Users\\liuxinze\\Desktop\\ai编程\\MiniMax Code\\MiniMax Code.exe"),
+         r#"[]"#, r#"["MiniMax Code.exe"]"#),
+        ("codex-cli", "Codex CLI", "cli",
+         Some("~/.codex/settings.json"), "json",
+         Some("codex"), None,
+         r#"["codex"]"#, r#"[]"#),
+        ("qwen-code-cli", "Qwen Code CLI", "cli",
+         Some("~/.qwen/settings.json"), "json",
+         Some("qwen"), None,
+         r#"["qwen"]"#, r#"[]"#),
+        ("opencode-cli", "OpenCode CLI", "cli",
+         None, "yaml",
+         Some("opencode"), None,
+         r#"["opencode"]"#, r#"[]"#),
+        ("kimi-cli", "Kimi CLI", "cli",
+         None, "env",
+         Some("kimi"), None,
+         r#"["kimi"]"#, r#"[]"#),
+        ("openclaw", "OpenClaw", "agent",
+         Some("~/.openclaw/openclaw.json"), "json5",
+         Some("openclaw"), None,
+         r#"["openclaw"]"#, r#"[]"#),
+        ("hermes-agent", "Hermes Agent", "agent",
+         Some("~/.hermes/config.yaml"), "yaml",
+         Some("hermes"), None,
+         r#"["hermes"]"#, r#"[]"#),
+        ("nanobot", "Nanobot", "agent",
+         Some("~/.nanobot/config.json"), "json",
+         Some("nanobot"), None,
+         r#"["nanobot"]"#, r#"[]"#),
+    ];
+
+    for (id, name, cat, config_path, config_fmt, launch_cmd, launch_path, path_cmds, files) in defaults {
+        conn.execute(
+            "INSERT OR IGNORE INTO tools (id, name, category, config_path, config_format,
+             launch_command, launch_path, detection_path_cmds, detection_files, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![id, name, cat, config_path, config_fmt,
+                launch_cmd, launch_path, path_cmds, files, now, now],
+        )?;
+    }
+    Ok(())
+}
+
+fn seed_default_providers(conn: &Connection) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let defaults: Vec<(&str, &str, &str, bool)> = vec![
+        ("minimax", "MiniMax", "https://agent.minimaxi.com/mavis/api/v1/llm/v1", true),
+        ("deepseek", "DeepSeek", "https://api.deepseek.com/anthropic", true),
+        ("kimi", "Kimi (月之暗面)", "https://api.moonshot.cn/v1", false),
+        ("zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", false),
+        ("qwen", "Qwen (通义千问)", "https://dashscope.aliyuncs.com/compatible-mode/v1", false),
+    ];
+
+    for (id, name, api_base, anthropic_mode) in defaults {
+        conn.execute(
+            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, name, api_base, anthropic_mode as i32, now, now],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_from_v1(conn: &Connection) -> Result<()> {
+    let has_old: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='vendors'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !has_old { return Ok(()); }
+
+    let migrated: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM settings WHERE key='schema_migrated' AND value='v2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if migrated { return Ok(()); }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, preset_id, name, api_base, model, keyring_key, created_at, updated_at FROM vendors",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(VendorInstance {
+            id: row.get(0)?, preset_id: row.get(1)?, name: row.get(2)?,
+            api_base: row.get(3)?, model: row.get(4)?, keyring_key: row.get(5)?,
+            created_at: row.get(6)?, updated_at: row.get(7)?,
+        })
+    })?;
+
+    for row in rows.flatten() {
+        let pid = row.preset_id.clone().unwrap_or_else(|| row.name.to_lowercase().replace(' ', "-"));
+        conn.execute(
+            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            rusqlite::params![pid, row.name, row.api_base, row.created_at, row.updated_at],
+        )?;
+        let mid = format!("{}/{}", pid, row.model);
+        conn.execute(
+            "INSERT OR IGNORE INTO models (id, provider_id, name, model_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![mid, pid, row.model, row.model, row.created_at, row.updated_at],
+        )?;
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_migrated', 'v2')",
+        [],
+    )?;
+    Ok(())
+}
+
+// ===== 工具 CRUD =====
+
+pub fn list_tools(conn: &Connection) -> Result<Vec<Tool>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, category, config_path, config_format, launch_command, launch_path,
+                env_keys_json, detection_path_cmds, detection_files, created_at, updated_at
+         FROM tools ORDER BY category, name",
+    )?;
+    let rows = stmt.query_map([], map_tool)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn get_tool(conn: &Connection, id: &str) -> Result<Option<Tool>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, category, config_path, config_format, launch_command, launch_path,
+                env_keys_json, detection_path_cmds, detection_files, created_at, updated_at
+         FROM tools WHERE id = ?1",
+    )?;
+    let mut iter = stmt.query_map([id], map_tool)?;
+    Ok(iter.next().transpose()?)
+}
+
+fn map_tool(row: &rusqlite::Row) -> rusqlite::Result<Tool> {
+    Ok(Tool {
+        id: row.get(0)?, name: row.get(1)?, category: row.get(2)?,
+        config_path: row.get(3)?, config_format: row.get(4)?,
+        launch_command: row.get(5)?, launch_path: row.get(6)?,
+        env_keys_json: row.get(7)?, detection_path_cmds: row.get(8)?,
+        detection_files: row.get(9)?, created_at: row.get(10)?, updated_at: row.get(11)?,
+    })
+}
+
+// ===== 厂商 CRUD =====
+
+pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, api_base, anthropic_mode, created_at, updated_at
+         FROM providers ORDER BY name",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Provider {
+            id: row.get(0)?, name: row.get(1)?, api_base: row.get(2)?,
+            anthropic_mode: row.get::<_, i32>(3)? != 0,
+            created_at: row.get(4)?, updated_at: row.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn insert_provider(conn: &Connection, p: &Provider) -> Result<()> {
+    conn.execute(
+        "INSERT INTO providers (id, name, api_base, anthropic_mode, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.created_at, p.updated_at],
+    )?;
+    Ok(())
+}
+
+pub fn delete_provider(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM providers WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+// ===== 模型 CRUD =====
+
+pub fn list_models(conn: &Connection) -> Result<Vec<Model>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, provider_id, name, model_id, context_length, max_output,
+                supports_attachment, supports_reasoning, supports_tool_call, supports_vision,
+                created_at, updated_at
+         FROM models ORDER BY provider_id, name",
+    )?;
+    let rows = stmt.query_map([], map_model)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn list_models_by_provider(conn: &Connection, provider_id: &str) -> Result<Vec<Model>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, provider_id, name, model_id, context_length, max_output,
+                supports_attachment, supports_reasoning, supports_tool_call, supports_vision,
+                created_at, updated_at
+         FROM models m WHERE m.provider_id = ?1 ORDER BY name",
+    )?;
+    let rows = stmt.query_map([provider_id], map_model)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn map_model(row: &rusqlite::Row) -> rusqlite::Result<Model> {
+    Ok(Model {
+        id: row.get(0)?, provider_id: row.get(1)?, name: row.get(2)?, model_id: row.get(3)?,
+        context_length: row.get(4)?, max_output: row.get(5)?,
+        supports_attachment: row.get::<_, i32>(6)? != 0,
+        supports_reasoning: row.get::<_, i32>(7)? != 0,
+        supports_tool_call: row.get::<_, i32>(8)? != 0,
+        supports_vision: row.get::<_, i32>(9)? != 0,
+        created_at: row.get(10)?, updated_at: row.get(11)?,
+    })
+}
+
+// ===== 绑定 CRUD =====
+
+pub fn list_bindings(conn: &Connection) -> Result<Vec<ToolBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tool_id, provider_id, model_id, keyring_key, is_active, created_at, updated_at
+         FROM tool_bindings ORDER BY tool_id",
+    )?;
+    let rows = stmt.query_map([], map_binding)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn get_active_binding(conn: &Connection, tool_id: &str) -> Result<Option<ToolBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tool_id, provider_id, model_id, keyring_key, is_active, created_at, updated_at
+         FROM tool_bindings WHERE tool_id = ?1 AND is_active = 1 LIMIT 1",
+    )?;
+    let mut iter = stmt.query_map([tool_id], map_binding)?;
+    Ok(iter.next().transpose()?)
+}
+
+pub fn set_active_binding(conn: &Connection, binding_id: &str, tool_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE tool_bindings SET is_active = 0, updated_at = strftime('%s','now') WHERE tool_id = ?1",
+        [tool_id],
+    )?;
+    conn.execute(
+        "UPDATE tool_bindings SET is_active = 1, updated_at = strftime('%s','now') WHERE id = ?1",
+        [binding_id],
+    )?;
+    Ok(())
+}
+
+pub fn upsert_binding(conn: &Connection, b: &ToolBinding) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO tool_bindings
+         (id, tool_id, provider_id, model_id, keyring_key, is_active, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            b.id, b.tool_id, b.provider_id, b.model_id, b.keyring_key,
+            b.is_active as i32, b.created_at, b.updated_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn map_binding(row: &rusqlite::Row) -> rusqlite::Result<ToolBinding> {
+    Ok(ToolBinding {
+        id: row.get(0)?, tool_id: row.get(1)?, provider_id: row.get(2)?,
+        model_id: row.get(3)?, keyring_key: row.get(4)?,
+        is_active: row.get::<_, i32>(5)? != 0,
+        created_at: row.get(6)?, updated_at: row.get(7)?,
+    })
+}
+
+// ===== 旧版兼容 =====
+// 保留给旧 commands 过渡用
+pub fn list_vendors(conn: &Connection) -> Result<Vec<VendorInstance>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, preset_id, name, api_base, model, keyring_key, created_at, updated_at
+         FROM vendors ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(VendorInstance {
+            id: row.get(0)?, preset_id: row.get(1)?, name: row.get(2)?,
+            api_base: row.get(3)?, model: row.get(4)?, keyring_key: row.get(5)?,
+            created_at: row.get(6)?, updated_at: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn get_vendor(conn: &Connection, id: &str) -> Result<Option<VendorInstance>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, preset_id, name, api_base, model, keyring_key, created_at, updated_at
+         FROM vendors WHERE id = ?1",
+    )?;
+    let mut iter = stmt.query_map([id], |row| {
+        Ok(VendorInstance {
+            id: row.get(0)?, preset_id: row.get(1)?, name: row.get(2)?,
+            api_base: row.get(3)?, model: row.get(4)?, keyring_key: row.get(5)?,
+            created_at: row.get(6)?, updated_at: row.get(7)?,
+        })
+    })?;
+    Ok(iter.next().transpose()?)
 }
 
 pub fn insert_vendor(conn: &Connection, v: &VendorInstance) -> Result<()> {
@@ -46,46 +522,6 @@ pub fn insert_vendor(conn: &Connection, v: &VendorInstance) -> Result<()> {
         ],
     )?;
     Ok(())
-}
-
-pub fn list_vendors(conn: &Connection) -> Result<Vec<VendorInstance>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, preset_id, name, api_base, model, keyring_key, created_at, updated_at
-         FROM vendors ORDER BY created_at ASC",
-    )?;
-    let iter = stmt.query_map([], |row| {
-        Ok(VendorInstance {
-            id: row.get(0)?,
-            preset_id: row.get(1)?,
-            name: row.get(2)?,
-            api_base: row.get(3)?,
-            model: row.get(4)?,
-            keyring_key: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    })?;
-    iter.collect()
-}
-
-pub fn get_vendor(conn: &Connection, id: &str) -> Result<Option<VendorInstance>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, preset_id, name, api_base, model, keyring_key, created_at, updated_at
-         FROM vendors WHERE id = ?1",
-    )?;
-    let mut iter = stmt.query_map([id], |row| {
-        Ok(VendorInstance {
-            id: row.get(0)?,
-            preset_id: row.get(1)?,
-            name: row.get(2)?,
-            api_base: row.get(3)?,
-            model: row.get(4)?,
-            keyring_key: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    })?;
-    Ok(iter.next().transpose()?)
 }
 
 pub fn update_vendor(conn: &Connection, v: &VendorInstance) -> Result<()> {
