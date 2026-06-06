@@ -379,6 +379,14 @@ pub fn delete_provider(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn update_provider(conn: &Connection, p: &Provider) -> Result<()> {
+    conn.execute(
+        "UPDATE providers SET name=?2, api_base=?3, anthropic_mode=?4, updated_at=?5 WHERE id=?1",
+        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.updated_at],
+    )?;
+    Ok(())
+}
+
 // ===== 模型 CRUD =====
 
 pub fn list_models(conn: &Connection) -> Result<Vec<Model>> {
@@ -409,6 +417,22 @@ pub fn list_models_by_provider(conn: &Connection, provider_id: &str) -> Result<V
         out.push(row?);
     }
     Ok(out)
+}
+
+pub fn insert_model(conn: &Connection, m: &Model) -> Result<()> {
+    conn.execute(
+        "INSERT INTO models (id, provider_id, name, model_id, context_length, max_output,
+         supports_attachment, supports_reasoning, supports_tool_call, supports_vision,
+         created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        rusqlite::params![
+            m.id, m.provider_id, m.name, m.model_id, m.context_length, m.max_output,
+            m.supports_attachment as i32, m.supports_reasoning as i32,
+            m.supports_tool_call as i32, m.supports_vision as i32,
+            m.created_at, m.updated_at
+        ],
+    )?;
+    Ok(())
 }
 
 fn map_model(row: &rusqlite::Row) -> rusqlite::Result<Model> {
@@ -469,6 +493,11 @@ pub fn upsert_binding(conn: &Connection, b: &ToolBinding) -> Result<()> {
             b.is_active as i32, b.created_at, b.updated_at
         ],
     )?;
+    Ok(())
+}
+
+pub fn delete_binding(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM tool_bindings WHERE id = ?1", [id])?;
     Ok(())
 }
 

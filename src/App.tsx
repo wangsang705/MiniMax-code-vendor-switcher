@@ -212,11 +212,26 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
 function ToolCard({ tool, det, installed, onBind }: {
   tool: Tool; det?: DetectionResult; installed?: boolean; onBind?: () => void;
 }) {
+  const [binding, setBinding] = useState<{ id: string; provider_name: string | null; model_name: string | null; } | null>(null);
   const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (installed) {
+      api.getToolBinding(tool.id).then(b => {
+        if (b) setBinding({ id: b.id, provider_name: b.provider_name, model_name: b.model_name });
+      }).catch(() => {});
+    }
+  }, [tool.id, installed]);
 
   const handleLaunch = async () => {
     try { const pid = await api.launchTool(tool.id); setResult(`✅ 已启动 (PID: ${pid})`); setTimeout(() => setResult(null), 3000); }
     catch (e) { setResult('❌ ' + e); }
+  };
+
+  const handleUnbind = async () => {
+    if (!binding || !confirm('确定解绑此工具的模型？')) return;
+    try { await api.unbindTool(binding.id); setBinding(null); setResult('✅ 已解绑'); setTimeout(() => setResult(null), 2000); }
+    catch (e) { setResult('❌ 解绑失败'); }
   };
 
   const handleInstall = async () => {
@@ -243,13 +258,18 @@ function ToolCard({ tool, det, installed, onBind }: {
               ) : (
                 <>{tool.category === 'cli' ? '💻 命令行' : tool.category === 'agent' ? '🤖 AI Agent' : '🖥 桌面端'}</>
               )}
+              {binding && <span className="ml-2 text-blue-500 font-medium">🔗 {binding.provider_name}/{binding.model_name}</span>}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {installed ? (
             <>
-              <ActionButton onClick={onBind!} label="绑定模型" color="blue" />
+              {binding ? (
+                <ActionButton onClick={handleUnbind} label="解绑" color="red" />
+              ) : (
+                <ActionButton onClick={onBind!} label="绑定模型" color="blue" />
+              )}
               <ActionButton onClick={handleLaunch} label="启动" color="emerald" />
             </>
           ) : (
@@ -272,6 +292,7 @@ function ProviderModelPanel() {
   const [models, setModels] = useState<Model[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [showAddModel, setShowAddModel] = useState(false);
+  const [editProvider, setEditProvider] = useState<Provider | null>(null);
   const [newProvider, setNewProvider] = useState({ id: '', name: '', api_base: '', anthropic_mode: true });
 
   const load = useCallback(() => {
@@ -313,8 +334,12 @@ function ProviderModelPanel() {
                       <div className="font-medium text-sm text-slate-800">{p.name}</div>
                       <div className="text-[11px] text-slate-400 mt-1 font-mono break-all">{p.api_base}</div>
                     </div>
-                    <button onClick={async () => { if (confirm('确定删除此厂商？')) { try { await api.deleteProvider(p.id); load(); } catch (e) { alert('删除失败'); } } }}
-                      className="text-slate-300 hover:text-red-400 transition-colors text-xs px-1.5 py-0.5 rounded hover:bg-red-50 shrink-0 ml-2">✕</button>
+                    <div className="flex gap-1 shrink-0 ml-2">
+                      <button onClick={() => setEditProvider(p)}
+                        className="text-slate-300 hover:text-blue-400 transition-colors text-xs px-1.5 py-0.5 rounded hover:bg-blue-50">✎</button>
+                      <button onClick={async () => { if (confirm('确定删除此厂商？')) { try { await api.deleteProvider(p.id); load(); } catch (e) { alert('删除失败'); } } }}
+                        className="text-slate-300 hover:text-red-400 transition-colors text-xs px-1.5 py-0.5 rounded hover:bg-red-50">✕</button>
+                    </div>
                   </div>
                   <div className="flex items-center gap-2 mt-3">
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${p.anthropic_mode ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
@@ -381,13 +406,14 @@ function ProviderModelPanel() {
       )}
 
       {/* 添加模型弹窗 */}
-      {showAddModel && <AddModelDialog onClose={() => setShowAddModel(false)} providers={providers} />}
+      {showAddModel && <AddModelDialog onClose={() => setShowAddModel(false)} onDone={() => { setShowAddModel(false); load(); }} providers={providers} />}
+      {editProvider && <EditProviderDialog provider={editProvider} onClose={() => setEditProvider(null)} onDone={() => { setEditProvider(null); load(); }} />}
     </div>
   );
 }
 
 // ===== 添加模型弹窗 =====
-function AddModelDialog({ onClose, providers }: { onClose: () => void; providers: Provider[] }) {
+function AddModelDialog({ onClose, onDone, providers }: { onClose: () => void; onDone: () => void; providers: Provider[] }) {
   const [providerId, setProviderId] = useState(providers[0]?.id || '');
   const [name, setName] = useState('');
   const [modelId, setModelId] = useState('');
@@ -399,10 +425,12 @@ function AddModelDialog({ onClose, providers }: { onClose: () => void; providers
     if (!providerId || !name || !modelId) return;
     setSaving(true);
     try {
-      // 直接用 createProvider 创建带模型的厂商，或后期扩展 API
-      // 目前模型是通过 DB 种子数据添加的，需要后端 API
-      // TODO: 添加后端 create_model 命令
-      alert('模型添加功能需要在后端添加 create_model 命令，当前暂时通过 SQLite 直接操作');
+      await api.createModel({
+        provider_id: providerId, name, model_id: modelId,
+        context_length: parseInt(ctxLen) || 128000,
+        max_output: parseInt(maxOut) || 8192,
+      });
+      onDone();
     } catch (e) { alert('添加失败: ' + e); }
     finally { setSaving(false); }
   };
@@ -428,6 +456,41 @@ function AddModelDialog({ onClose, providers }: { onClose: () => void; providers
         <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
         <button onClick={handleSave} disabled={saving}
           className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300">添加</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ===== 编辑厂商弹窗 =====
+function EditProviderDialog({ provider, onClose, onDone }: { provider: Provider; onClose: () => void; onDone: () => void }) {
+  const [name, setName] = useState(provider.name);
+  const [apiBase, setApiBase] = useState(provider.api_base);
+  const [anthropicMode, setAnthropicMode] = useState(provider.anthropic_mode);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name || !apiBase) return;
+    setSaving(true);
+    try {
+      await api.updateProvider({ id: provider.id, name, api_base: apiBase, anthropic_mode: anthropicMode });
+      onDone();
+    } catch (e) { alert('编辑失败: ' + e); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="编辑厂商" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="名称" value={name} onChange={setName} />
+        <Field label="API Base URL" value={apiBase} onChange={setApiBase} />
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={anthropicMode} onChange={e => setAnthropicMode(e.target.checked)} className="rounded border-slate-300" />
+          Anthropic 兼容模式
+        </label>
+      </div>
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
+        <button onClick={handleSave} disabled={saving} className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300">保存</button>
       </div>
     </Modal>
   );
@@ -605,10 +668,11 @@ function ActionButton({ onClick, label, color, disabled }: { onClick: () => void
   const colors: Record<string, string> = {
     blue: 'bg-blue-50 text-blue-700 hover:bg-blue-100',
     emerald: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+    red: 'bg-red-50 text-red-700 hover:bg-red-100',
   };
   return (
     <button onClick={onClick} disabled={disabled}
-      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${colors[color]}`}>
+      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${colors[color] || colors.blue}`}>
       {label}
     </button>
   );

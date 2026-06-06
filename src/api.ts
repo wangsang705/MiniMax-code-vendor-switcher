@@ -125,4 +125,15 @@ export const api = {
   // -- 一键安装 --
   getInstallInfo: (tool_id: string) => invoke<InstallInfo | null>('get_install_info', { toolId: tool_id }),
   installTool: (tool_id: string) => invoke<string>('install_tool', { toolId: tool_id }),
+
+  // -- 绑定状态 / 解绑 / 编辑厂商 / 添加模型 --
+  getToolBinding: (tool_id: string) => invoke<{
+    id: string; tool_id: string; provider_id: string; provider_name: string | null;
+    model_id: string; model_name: string | null; is_active: boolean;
+  } | null>('get_tool_binding', { toolId: tool_id }),
+  unbindTool: (binding_id: string) => invoke<void>('unbind_tool', { bindingId: binding_id }),
+  updateProvider: (input: { id: string; name: string; api_base: string; anthropic_mode: boolean }) =>
+    invoke<Provider>('update_provider', { input }),
+  createModel: (input: { provider_id: string; name: string; model_id: string; context_length: number; max_output: number }) =>
+    invoke<Model>('create_model', { input }),
 };

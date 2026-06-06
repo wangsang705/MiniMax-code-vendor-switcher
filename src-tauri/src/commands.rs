@@ -521,3 +521,62 @@ pub fn get_install_info(tool_id: String) -> Result<Option<crate::installer::Inst
 pub fn install_tool(tool_id: String) -> Result<String, String> {
     crate::installer::run_install(&tool_id)
 }
+
+// ===================================================================
+// 绑定状态 / 解绑 / 编辑厂商 / 添加模型
+// ===================================================================
+
+#[tauri::command]
+pub fn get_tool_binding(state: State<AppState>, tool_id: String) -> Result<Option<serde_json::Value>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let binding = db::get_active_binding(&conn, &tool_id).map_err(|e| e.to_string())?;
+    let Some(b) = binding else { return Ok(None); };
+    let provider = db::list_providers(&conn).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == b.provider_id);
+    let model = db::list_models(&conn).map_err(|e| e.to_string())?.into_iter().find(|m| m.id == b.model_id);
+    Ok(Some(serde_json::json!({
+        "id": b.id, "tool_id": b.tool_id, "provider_id": b.provider_id,
+        "provider_name": provider.as_ref().map(|p| p.name.as_str()),
+        "model_id": b.model_id, "model_name": model.as_ref().map(|m| m.name.as_str()),
+        "is_active": b.is_active,
+    })))
+}
+
+#[tauri::command]
+pub fn unbind_tool(state: State<AppState>, binding_id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_binding(&conn, &binding_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_provider(state: State<AppState>, input: CreateProviderInput) -> Result<db::Provider, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut provider = db::list_providers(&conn).map_err(|e| e.to_string())?
+        .into_iter().find(|p| p.id == input.id)
+        .ok_or_else(|| "厂商未找到".to_string())?;
+    provider.name = input.name; provider.api_base = input.api_base;
+    provider.anthropic_mode = input.anthropic_mode; provider.updated_at = now_ts();
+    db::update_provider(&conn, &provider).map_err(|e| e.to_string())?;
+    Ok(provider)
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateModelInput {
+    pub provider_id: String, pub name: String, pub model_id: String,
+    pub context_length: i64, pub max_output: i64,
+}
+
+#[tauri::command]
+pub fn create_model(state: State<AppState>, input: CreateModelInput) -> Result<db::Model, String> {
+    let id = format!("{}/{}", input.provider_id, input.model_id);
+    let now = now_ts();
+    let m = db::Model {
+        id, provider_id: input.provider_id, name: input.name, model_id: input.model_id,
+        context_length: input.context_length, max_output: input.max_output,
+        supports_attachment: false, supports_reasoning: true,
+        supports_tool_call: true, supports_vision: false,
+        created_at: now, updated_at: now,
+    };
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::insert_model(&conn, &m).map_err(|e| e.to_string())?;
+    Ok(m)
+}

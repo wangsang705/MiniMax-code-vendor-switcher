@@ -60,6 +60,10 @@ pub fn run() {
             commands::chat_send,
             commands::get_install_info,
             commands::install_tool,
+            commands::get_tool_binding,
+            commands::unbind_tool,
+            commands::update_provider,
+            commands::create_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
