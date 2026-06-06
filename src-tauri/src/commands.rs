@@ -336,7 +336,17 @@ pub fn apply_binding(
     model_id: String,
     api_key: String,
 ) -> Result<(), String> {
-    // 保存 API Key 到 keyring
+    // 从 DB 获取真实的模型名
+    let model_name = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let models = db::list_models_by_provider(&conn, &provider_id)
+            .map_err(|e| e.to_string())?;
+        models.into_iter()
+            .find(|m| m.id == model_id)
+            .map(|m| m.model_id)
+            .ok_or_else(|| "模型未找到".to_string())?
+    };
+
     let binding_id = uuid::Uuid::new_v4().to_string();
     let keyring_key = format!("binding:{}", binding_id);
 
@@ -348,7 +358,7 @@ pub fn apply_binding(
         id: binding_id.clone(),
         tool_id: tool_id.clone(),
         provider_id: provider_id.clone(),
-        model_id,
+        model_id: model_id.clone(),
         keyring_key: Some(keyring_key),
         is_active: true,
         created_at: now,
@@ -362,8 +372,8 @@ pub fn apply_binding(
         db::upsert_binding(&conn, &binding).map_err(|e| e.to_string())?;
     }
 
-    // 写入工具配置文件
-    apply_config_for_tool(&state, &tool_id, &provider_id, &api_key)?;
+    // 写入工具配置文件（传递真实模型名）
+    apply_config_for_tool(&state, &tool_id, &provider_id, &model_name, &api_key)?;
 
     Ok(())
 }
@@ -373,6 +383,7 @@ fn apply_config_for_tool(
     state: &State<AppState>,
     tool_id: &str,
     provider_id: &str,
+    model_name: &str,
     api_key: &str,
 ) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -387,14 +398,12 @@ fn apply_config_for_tool(
     match tool_id {
         "minimax-code-cli" | "minimax-code-desktop" => {
             let path = state.config_path.lock().map_err(|e| e.to_string())?.clone();
-            let model = &provider_id; // FIXME: use actual model name
             minimax_config::apply_provider(
                 &path, provider_id, &provider.name,
-                &provider.api_base, model, api_key,
+                &provider.api_base, model_name, api_key,
             ).map_err(|e| format!("MiniMax 配置写入失败: {}", e))?;
         }
         "claude-code-cli" => {
-            // Claude Code: 写 ~/.claude/settings.json
             let home = std::env::var_os("USERPROFILE")
                 .or_else(|| std::env::var_os("HOME"))
                 .map(PathBuf::from)
@@ -413,23 +422,22 @@ fn apply_config_for_tool(
             settings.insert("env".to_string(), serde_json::json!({
                 "ANTHROPIC_BASE_URL": provider.api_base,
                 "ANTHROPIC_AUTH_TOKEN": api_key,
-                "ANTHROPIC_MODEL": provider_id,
+                "ANTHROPIC_MODEL": model_name,
             }));
             let content = serde_json::to_string_pretty(&serde_json::Value::Object(settings))
                 .map_err(|e| e.to_string())?;
             std::fs::write(&path, content).map_err(|e| e.to_string())?;
         }
-        // -- Agent 适配器 --
         "openclaw" => {
-            crate::agent_adapters::apply_openclaw(&provider.name, &provider.api_base, provider_id, api_key)
+            crate::agent_adapters::apply_openclaw(&provider.name, &provider.api_base, model_name, api_key)
                 .map_err(|e| format!("OpenClaw 配置写入失败: {}", e))?;
         }
         "hermes-agent" => {
-            crate::agent_adapters::apply_hermes(provider_id, &provider.api_base, provider_id, api_key)
+            crate::agent_adapters::apply_hermes(provider_id, &provider.api_base, model_name, api_key)
                 .map_err(|e| format!("Hermes Agent 配置写入失败: {}", e))?;
         }
         "nanobot" => {
-            crate::agent_adapters::apply_nanobot(provider_id, &provider.api_base, provider_id, api_key)
+            crate::agent_adapters::apply_nanobot(provider_id, &provider.api_base, model_name, api_key)
                 .map_err(|e| format!("Nanobot 配置写入失败: {}", e))?;
         }
         _ => return Err(format!("暂不支持的工具: {}", tool_id)),
