@@ -209,9 +209,40 @@ function ToolCard({ tool, det, installed }: {
             <ActionButton onClick={handleLaunch} label="启动" color="emerald" />
           </div>
         ) : (
-          <span className="text-xs text-slate-300 px-3">—</span>
+          <InstallButton toolId={tool.id} />
         )}
       </div>
+    </div>
+  );
+}
+
+// ===== 安装按钮 =====
+function InstallButton({ toolId }: { toolId: string }) {
+  const [installing, setInstalling] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const handleInstall = async () => {
+    setInstalling(true);
+    setResult(null);
+    try {
+      const msg = await api.installTool(toolId);
+      setResult('✅ ' + msg);
+    } catch (e) {
+      setResult('❌ ' + e);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <ActionButton onClick={handleInstall} disabled={installing}
+        label={installing ? '安装中...' : '一键安装'} color="blue" />
+      {result && (
+        <span className={`text-[10px] max-w-[200px] truncate ${result.startsWith('✅') ? 'text-emerald-600' : 'text-red-500'}`}>
+          {result}
+        </span>
+      )}
     </div>
   );
 }

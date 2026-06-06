@@ -2,6 +2,7 @@ pub mod agent_adapters;
 pub mod commands;
 pub mod db;
 pub mod detector;
+pub mod installer;
 pub mod keyring_store;
 pub mod launcher;
 pub mod llm_chat;
@@ -57,6 +58,8 @@ pub fn run() {
             commands::apply_binding,
             commands::launch_tool,
             commands::chat_send,
+            commands::get_install_info,
+            commands::install_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

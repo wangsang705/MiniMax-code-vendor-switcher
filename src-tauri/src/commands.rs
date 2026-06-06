@@ -499,3 +499,17 @@ pub async fn chat_send(input: ChatInput) -> Result<crate::llm_chat::ChatResponse
     };
     crate::llm_chat::chat_complete(req).await
 }
+
+// ===================================================================
+// 一键安装命令
+// ===================================================================
+
+#[tauri::command]
+pub fn get_install_info(tool_id: String) -> Result<Option<crate::installer::InstallInfo>, String> {
+    Ok(crate::installer::get_install_info(&tool_id))
+}
+
+#[tauri::command]
+pub fn install_tool(tool_id: String) -> Result<String, String> {
+    crate::installer::run_install(&tool_id)
+}

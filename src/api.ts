@@ -68,6 +68,12 @@ export interface DetectionResult {
   versions: string[];
 }
 
+export interface InstallInfo {
+  tool_id: string;
+  methods: { Npm?: { package: string }; Curl?: { url: string }; Download?: { url: string; filename: string }; Manual?: { guide: string } }[];
+  description: string;
+}
+
 export interface ToolBinding {
   id: string;
   tool_id: string;
@@ -115,4 +121,8 @@ export const api = {
     model: string;
     anthropic_mode: boolean;
   }) => invoke<{ content: string; model: string }>('chat_send', { input }),
+
+  // -- 一键安装 --
+  getInstallInfo: (tool_id: string) => invoke<InstallInfo | null>('get_install_info', { toolId: tool_id }),
+  installTool: (tool_id: string) => invoke<string>('install_tool', { toolId: tool_id }),
 };

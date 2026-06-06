@@ -1,5 +1,10 @@
 use std::path::PathBuf;
 
+// Helper macro for YAML value construction
+macro_rules! s {
+    ($val:expr) => { serde_yaml::Value::String($val.to_string()) };
+}
+
 /// Agent 配置写入结果
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -134,8 +139,3 @@ pub fn apply_nanobot(provider_id: &str, api_base: &str, model: &str, api_key: &s
     Ok(())
 }
 
-// 辅助函数
-macro_rules! s {
-    ($val:expr) => { serde_yaml::Value::String($val.to_string()) };
-}
-use s;
