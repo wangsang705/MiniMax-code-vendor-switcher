@@ -1,9 +1,9 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-pub mod claude_config;
 pub mod commands;
 pub mod db;
 pub mod keyring_store;
 pub mod launcher;
+pub mod minimax_config;
 pub mod vendor;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -18,15 +18,15 @@ pub fn run() {
             let db_path = app_data.join("vendors.db");
             let conn = db::init_db(&db_path).expect("init db");
 
-            // MiniMax Code settings.json 路径
+            // MiniMax Code 桌面版 config.yaml 路径
             let home = dirs_home().expect("no home");
-            let claude_dir = home.join(".claude");
-            std::fs::create_dir_all(&claude_dir).ok();
-            let settings_path = claude_dir.join("settings.json");
+            let minimax_dir = home.join(".minimax");
+            std::fs::create_dir_all(&minimax_dir).ok();
+            let config_path = minimax_dir.join("config.yaml");
 
             app.manage(commands::AppState {
                 db: Mutex::new(conn),
-                settings_path: Mutex::new(settings_path),
+                config_path: Mutex::new(config_path),
             });
             Ok(())
         })

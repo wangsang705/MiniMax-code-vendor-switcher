@@ -1,19 +1,84 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-pub fn claude_binary_path() -> PathBuf {
-    // 优先 MiniMax-code，回退到 claude
-    if let Ok(p) = which("MiniMax-code") {
-        return p;
+/// 查找 MiniMax Code 桌面版可执行文件
+pub fn find_minimax_desktop() -> Option<PathBuf> {
+    let candidates = desktop_candidate_paths();
+    for p in &candidates {
+        if p.is_file() {
+            return Some(p.clone());
+        }
     }
-    if let Ok(p) = which("claude") {
-        return p;
+    None
+}
+
+fn desktop_candidate_paths() -> Vec<PathBuf> {
+    let mut list = Vec::new();
+
+    // 1) 桌面快捷方式所在路径（用户自定义安装）
+    if let Some(home) = dirs_home() {
+        // 常见用户自定义安装路径
+        list.push(
+            home.join("Desktop")
+                .join("ai编程")
+                .join("MiniMax Code")
+                .join("MiniMax Code.exe"),
+        );
+        // 另一种可能的桌面安装路径
+        list.push(
+            home.join("Desktop")
+                .join("MiniMax Code")
+                .join("MiniMax Code.exe"),
+        );
     }
-    PathBuf::from("MiniMax-code")
+
+    // 2) 标准 Electron 安装路径（%LOCALAPPDATA%\Programs\）
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let base = PathBuf::from(local_app_data).join("Programs").join("MiniMax Code");
+        list.push(base.join("MiniMax Code.exe"));
+    }
+
+    list
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
 }
 
 pub fn find_claude() -> Option<PathBuf> {
-    which("MiniMax-code").or_else(|_| which("claude")).ok()
+    // 优先找 MiniMax Code 桌面版
+    if let Some(p) = find_minimax_desktop() {
+        return Some(p);
+    }
+    // 回退到 minimax CLI
+    if let Ok(p) = which("minimax") {
+        return Some(p);
+    }
+    // 再回退到 claude CLI
+    which("claude").ok()
+}
+
+pub fn claude_binary_path() -> PathBuf {
+    // 优先 MiniMax Code 桌面版
+    if let Some(p) = find_minimax_desktop() {
+        return p;
+    }
+    // 回退到 minimax CLI
+    if let Ok(p) = which("minimax") {
+        return p;
+    }
+    // 再回退到 claude CLI
+    if let Ok(p) = which("claude") {
+        return p;
+    }
+    PathBuf::from("MiniMax Code.exe")
 }
 
 pub fn which(cmd: &str) -> std::io::Result<PathBuf> {
@@ -21,9 +86,6 @@ pub fn which(cmd: &str) -> std::io::Result<PathBuf> {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "PATH not set"))?;
 
     // Windows 上优先 .exe > .cmd > .bat > 无后缀。
-    // 在 Windows 上，Path 上名字完全无后缀的条目（典型为 sh/bash 脚本 wrapper）
-    // 不能被 Command::new 直接 spawn；必须降级到最后再考虑，
-    // 否则会把 npm 的 sh 脚本当成本体执行。
     #[cfg(windows)]
     let candidates_per_dir: Vec<String> = {
         let mut v = Vec::with_capacity(4);
@@ -48,7 +110,7 @@ pub fn which(cmd: &str) -> std::io::Result<PathBuf> {
     Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
 }
 
-// 仅测试可见的别名，方便 tests/launcher_test.rs 直接验证搜索优先级。
+// 仅测试可见的别名
 #[doc(hidden)]
 pub use which as which_for_test;
 
@@ -57,11 +119,7 @@ pub fn launch_claude() -> std::io::Result<u32> {
     let path_str = path.to_string_lossy();
     let lower = path_str.to_lowercase();
 
-    // 根据文件扩展名选择解释器：
-    //   .cmd / .bat -> cmd /c <path>
-    //   .exe        -> 直接 spawn（PE 格式可由 Windows 直接加载）
-    //   .sh 或无后缀 -> 视为 sh/bash 脚本，用 bash 执行
-    //                   （用户机器上 Git for Windows 提供 bash）
+    // 根据文件扩展名选择解释器
     let mut cmd = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
         let mut c = Command::new("cmd");
         c.arg("/c").arg(&path);
@@ -73,8 +131,7 @@ pub fn launch_claude() -> std::io::Result<u32> {
     } else if lower.ends_with(".exe") {
         Command::new(&path)
     } else {
-        // 无后缀（npm 全局安装的 claude sh 脚本 wrapper），
-        // Windows 上也用 bash 解释（Git Bash / WSL bash 都在 PATH）
+        // 无后缀脚本
         let mut c = Command::new("bash");
         c.arg(&path);
         c
@@ -82,4 +139,20 @@ pub fn launch_claude() -> std::io::Result<u32> {
 
     let child = cmd.spawn()?;
     Ok(child.id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_which_finds_self() {
+        // 应该能找到 cmd.exe（Windows）或 sh（Unix）
+        let result = if cfg!(windows) {
+            which("cmd")
+        } else {
+            which("sh")
+        };
+        assert!(result.is_ok(), "应该能找到系统命令: {:?}", result.err());
+    }
 }

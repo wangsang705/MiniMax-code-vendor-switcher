@@ -1,14 +1,18 @@
 use std::sync::Mutex;
-use tauri_app_lib::launcher::{claude_binary_path, find_claude, which_for_test};
+use tauri_app_lib::launcher::{claude_binary_path, find_claude, find_minimax_desktop, which_for_test};
 
-// 序列化所有可能修改 PATH 的测试，避免 cargo test 默认多线程下互相污染。
+// 序列化所有可能修改 PATH 的测试
 static PATH_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_claude_binary_path_format() {
     let p = claude_binary_path();
     let s = p.to_string_lossy();
-    assert!(s.contains("claude") || s.contains("MiniMax-code"));
+    assert!(
+        s.contains("MiniMax") || s.contains("claude") || s.contains("minimax"),
+        "claude_binary_path() should return a known path, got: {}",
+        s
+    );
 }
 
 #[test]
@@ -18,25 +22,27 @@ fn test_find_claude_doesnt_panic() {
 }
 
 #[test]
+fn test_find_minimax_desktop_returns_some_or_none() {
+    // 只是验证不会 panic
+    let _ = find_minimax_desktop();
+}
+
+#[test]
 fn test_which_prefers_exe_on_windows() {
     let _guard = PATH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
-    // 准备临时目录，里面同时放 fake（sh 脚本 wrapper）和 fake.exe（PE 格式）
     let dir = tempfile::tempdir().expect("create tempdir");
     let sh = dir.path().join("fake");
     let exe = dir.path().join("fake.exe");
     std::fs::write(&sh, b"#!/bin/sh\necho fake\n").expect("write sh");
     std::fs::write(&exe, b"PE\x00\x00\x00\x00").expect("write exe");
 
-    // 备份原 PATH
     let orig = std::env::var_os("PATH").unwrap_or_default();
-    // 临时目录放最前面
     let new_path = std::env::join_paths(
         std::iter::once(dir.path().to_path_buf()).chain(std::env::split_paths(&orig)),
     )
     .expect("join path");
 
-    // SAFETY: 测试用 Mutex 串行化、单线程下访问，无数据竞争
     unsafe { std::env::set_var("PATH", &new_path) };
     let result = which_for_test("fake");
     unsafe { std::env::set_var("PATH", &orig) };
@@ -52,7 +58,6 @@ fn test_which_prefers_exe_on_windows() {
 
 #[test]
 fn test_which_falls_back_to_bat_when_no_exe() {
-    // 验证次优顺序：没 .exe 时回退到 .bat / .cmd
     let _guard = PATH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let dir = tempfile::tempdir().expect("create tempdir");
@@ -81,7 +86,6 @@ fn test_which_falls_back_to_bat_when_no_exe() {
 fn test_which_returns_not_found_when_absent() {
     let _guard = PATH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
-    // 用一个绝对不存在的名字
     let unique = format!("__definitely_not_on_path_{}__", std::process::id());
     let result = which_for_test(&unique);
     assert!(result.is_err(), "不存在时应该返回 Err，实际: {:?}", result);

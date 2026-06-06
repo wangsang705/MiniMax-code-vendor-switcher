@@ -8,7 +8,7 @@ pub struct VendorPreset {
 pub fn presets() -> Vec<VendorPreset> {
     vec![
         VendorPreset {
-            id: "MiniMax",
+            id: "minimax",
             name: "MiniMax",
             api_base: "https://api.MiniMax.com",
             default_model: "MiniMax-M3",
@@ -16,7 +16,8 @@ pub fn presets() -> Vec<VendorPreset> {
         VendorPreset {
             id: "deepseek",
             name: "DeepSeek",
-            api_base: "https://api.deepseek.com",
+            // MiniMax Code 使用 @ai-sdk/anthropic 适配器 => 需要用 Anthropic 兼容端点
+            api_base: "https://api.deepseek.com/anthropic",
             default_model: "deepseek-chat",
         },
         VendorPreset {
