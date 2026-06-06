@@ -109,7 +109,7 @@ function ToolHubPanel() {
           <div className="grid gap-3">
             {installed.map(t => {
               const det = detection.find(d => d.tool_id === t.id)!;
-              return <ToolCard key={t.id} tool={t} det={det} onBind={() => setBindTarget(t)} />;
+              return <ToolCard key={t.id} tool={t} det={det} installed onBind={() => setBindTarget(t)} />;
             })}
           </div>
         </Section>
@@ -146,6 +146,12 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
   useEffect(() => {
     Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => {
       setProviders(p); setModels(m);
+      // 自动选择第一个厂商
+      if (p.length > 0) {
+        setSelProvider(p[0].id);
+        const avail = m.filter(m => m.provider_id === p[0].id);
+        if (avail.length > 0) setSelModel(avail[0].id);
+      }
     });
   }, []);
 
@@ -170,11 +176,11 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-slate-800 mb-1">绑定模型</h3>
-        <p className="text-xs text-slate-400 mb-5">为 <strong>{tool.name}</strong> 选择厂商和模型</p>
+        <h3 className="text-base font-semibold text-slate-800 mb-1">为 {tool.name} 绑定模型</h3>
+        <p className="text-xs text-slate-400 mb-5">选择已配置的厂商和模型，输入 API Key 后绑定。同一工具切换模型只需重新绑定。</p>
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商</label>
+            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商（可在模型中心添加）</label>
             <select value={selProvider} onChange={e => onProviderChange(e.target.value)}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="">选择厂商...</option>
