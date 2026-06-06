@@ -64,6 +64,7 @@ pub fn run() {
             commands::unbind_tool,
             commands::update_provider,
             commands::create_model,
+            commands::get_provider_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

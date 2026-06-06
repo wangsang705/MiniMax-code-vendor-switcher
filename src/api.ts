@@ -106,11 +106,11 @@ export const api = {
   listTools: () => invoke<Tool[]>('list_tools'),
   listProviders: () => invoke<Provider[]>('list_providers'),
   listModels: () => invoke<Model[]>('list_models'),
-  createProvider: (input: { id: string; name: string; api_base: string; anthropic_mode: boolean }) =>
+  createProvider: (input: { id: string; name: string; api_base: string; anthropic_mode: boolean; api_key?: string }) =>
     invoke<Provider>('create_provider', { input }),
   deleteProvider: (id: string) => invoke<void>('delete_provider', { id }),
-  applyBinding: (tool_id: string, provider_id: string, model_id: string, api_key: string) =>
-    invoke<void>('apply_binding', { toolId: tool_id, providerId: provider_id, modelId: model_id, apiKey: api_key }),
+  applyBinding: (tool_id: string, provider_id: string, model_id: string, api_key?: string) =>
+    invoke<void>('apply_binding', { toolId: tool_id, providerId: provider_id, modelId: model_id, apiKey: api_key || null }),
   launchTool: (tool_id: string) => invoke<number>('launch_tool', { toolId: tool_id }),
 
   // -- AI 对话 --
@@ -132,8 +132,9 @@ export const api = {
     model_id: string; model_name: string | null; is_active: boolean;
   } | null>('get_tool_binding', { toolId: tool_id }),
   unbindTool: (binding_id: string) => invoke<void>('unbind_tool', { bindingId: binding_id }),
-  updateProvider: (input: { id: string; name: string; api_base: string; anthropic_mode: boolean }) =>
+  updateProvider: (input: { id: string; name: string; api_base: string; anthropic_mode: boolean; api_key?: string }) =>
     invoke<Provider>('update_provider', { input }),
   createModel: (input: { provider_id: string; name: string; model_id: string; context_length: number; max_output: number }) =>
     invoke<Model>('create_model', { input }),
+  getProviderKey: (provider_id: string) => invoke<string>('get_provider_key', { providerId: provider_id }),
 };

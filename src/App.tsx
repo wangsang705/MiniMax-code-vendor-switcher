@@ -134,7 +134,7 @@ function ToolHubPanel() {
   );
 }
 
-// ===== 绑定弹窗 =====
+// ===== 绑定弹窗（自动使用厂商已保存的 Key） =====
 function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void; onDone: () => void }) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<Model[]>([]);
@@ -142,30 +142,37 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
   const [selModel, setSelModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
+  const [hasStoredKey, setHasStoredKey] = useState(false);
+  const [firstLoad, setFirstLoad] = useState(true);
 
   useEffect(() => {
     Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => {
       setProviders(p); setModels(m);
-      // 自动选择第一个厂商
       if (p.length > 0) {
         setSelProvider(p[0].id);
-        const avail = m.filter(m => m.provider_id === p[0].id);
+        const avail = m.filter(x => x.provider_id === p[0].id);
         if (avail.length > 0) setSelModel(avail[0].id);
+        // 尝试获取第一个厂商的已保存 Key
+        api.getProviderKey(p[0].id).then(k => { setApiKey(k); setHasStoredKey(true); }).catch(() => { setHasStoredKey(false); });
       }
+      setFirstLoad(false);
     });
   }, []);
 
-  const onProviderChange = (pid: string) => {
+  const onProviderChange = async (pid: string) => {
     setSelProvider(pid);
     const avail = models.filter(m => m.provider_id === pid);
     if (avail.length > 0) setSelModel(avail[0].id);
+    try { const k = await api.getProviderKey(pid); setApiKey(k); setHasStoredKey(true); }
+    catch { setApiKey(''); setHasStoredKey(false); }
   };
 
   const handleSave = async () => {
-    if (!selProvider || !selModel || !apiKey) return;
+    if (!selProvider || !selModel || firstLoad) return;
+    if (!hasStoredKey && !apiKey) return;
     setSaving(true);
     try {
-      await api.applyBinding(tool.id, selProvider, selModel, apiKey);
+      await api.applyBinding(tool.id, selProvider, selModel, hasStoredKey ? undefined : apiKey);
       onDone();
     } catch (e) { alert('绑定失败: ' + e); }
     finally { setSaving(false); }
@@ -177,10 +184,10 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
     <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
         <h3 className="text-base font-semibold text-slate-800 mb-1">为 {tool.name} 绑定模型</h3>
-        <p className="text-xs text-slate-400 mb-5">选择已配置的厂商和模型，输入 API Key 后绑定。同一工具切换模型只需重新绑定。</p>
+        <p className="text-xs text-slate-400 mb-5">厂商和模型已在模型中心配置，选择后即可绑定。</p>
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商（可在模型中心添加）</label>
+            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商（可在模型中心添加和管理）</label>
             <select value={selProvider} onChange={e => onProviderChange(e.target.value)}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="">选择厂商...</option>
@@ -190,21 +197,24 @@ function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void
           <div>
             <label className="text-xs font-medium text-slate-500 mb-1 block">模型</label>
             <select value={selModel} onChange={e => setSelModel(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={!selProvider}>
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" disabled={!selProvider}>
               <option value="">选择模型...</option>
               {availModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">API Key</label>
-            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-              placeholder="sk-..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
+          {!hasStoredKey ? (
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">API Key（首次绑定需输入，会自动保存）</label>
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                placeholder="sk-..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+          ) : (
+            <p className="text-xs text-emerald-600">✅ 已保存 API Key，可直接绑定</p>
+          )}
         </div>
         <div className="flex justify-end gap-2 mt-6">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
-          <button onClick={handleSave} disabled={saving || !selProvider || !selModel || !apiKey}
+          <button onClick={handleSave} disabled={saving || !selProvider || !selModel || (!hasStoredKey && !apiKey)}
             className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300 transition-colors">
             {saving ? '绑定中...' : '确认绑定'}
           </button>
@@ -299,7 +309,7 @@ function ProviderModelPanel() {
   const [showAdd, setShowAdd] = useState(false);
   const [showAddModel, setShowAddModel] = useState(false);
   const [editProvider, setEditProvider] = useState<Provider | null>(null);
-  const [newProvider, setNewProvider] = useState({ id: '', name: '', api_base: '', anthropic_mode: true });
+  const [newProvider, setNewProvider] = useState({ id: '', name: '', api_base: '', anthropic_mode: true, api_key: '' });
 
   const load = useCallback(() => {
     Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => { setProviders(p); setModels(m); }).catch(console.error);
@@ -309,8 +319,8 @@ function ProviderModelPanel() {
   const handleAddProvider = async () => {
     if (!newProvider.id || !newProvider.name || !newProvider.api_base) return;
     try {
-      await api.createProvider(newProvider);
-      setShowAdd(false); setNewProvider({ id: '', name: '', api_base: '', anthropic_mode: true }); load();
+      await api.createProvider({ ...newProvider, api_key: newProvider.api_key || undefined });
+      setShowAdd(false); setNewProvider({ id: '', name: '', api_base: '', anthropic_mode: true, api_key: '' }); load();
     } catch (e) { alert('添加失败: ' + e); }
   };
 
@@ -399,6 +409,11 @@ function ProviderModelPanel() {
             <Field label="厂商 ID" value={newProvider.id} onChange={v => setNewProvider(p => ({ ...p, id: v }))} placeholder="例: deepseek" />
             <Field label="名称" value={newProvider.name} onChange={v => setNewProvider(p => ({ ...p, name: v }))} placeholder="例: DeepSeek" />
             <Field label="API Base URL" value={newProvider.api_base} onChange={v => setNewProvider(p => ({ ...p, api_base: v }))} placeholder="https://api.deepseek.com/anthropic" />
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">API Key（选填，保存后绑定工具时自动使用）</label>
+              <input type="password" value={newProvider.api_key} onChange={e => setNewProvider(p => ({ ...p, api_key: e.target.value }))}
+                placeholder="sk-..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
             <label className="flex items-center gap-2 text-sm text-slate-600">
               <input type="checkbox" checked={newProvider.anthropic_mode} onChange={e => setNewProvider(p => ({ ...p, anthropic_mode: e.target.checked }))} className="rounded border-slate-300" />
               Anthropic 兼容模式
