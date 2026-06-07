@@ -1,4 +1,5 @@
 pub mod agent_adapters;
+pub mod claude_config;
 pub mod commands;
 pub mod db;
 pub mod detector;
@@ -7,6 +8,7 @@ pub mod keyring_store;
 pub mod launcher;
 pub mod llm_chat;
 pub mod minimax_config;
+pub mod tool_configs;
 pub mod vendor;
 
 fn dirs_home() -> Option<std::path::PathBuf> {
@@ -64,7 +66,8 @@ pub fn run() {
             commands::unbind_tool,
             commands::update_provider,
             commands::create_model,
-            commands::get_provider_key,
+            commands::update_model,
+            commands::delete_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

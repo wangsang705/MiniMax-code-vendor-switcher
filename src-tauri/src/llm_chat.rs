@@ -22,6 +22,10 @@ pub struct ChatResponse {
     pub model: String,
 }
 
+fn error_snippet(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
 /// 发送聊天请求到 LLM API（非流式）
 pub async fn chat_complete(req: ChatRequest) -> Result<ChatResponse, String> {
     if req.anthropic_mode {
@@ -62,7 +66,7 @@ async fn chat_anthropic(req: ChatRequest) -> Result<ChatResponse, String> {
     let text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
 
     if !status.is_success() {
-        return Err(format!("API 错误 ({}): {}", status.as_u16(), &text[..text.len().min(200)]));
+        return Err(format!("API 错误 ({}): {}", status.as_u16(), error_snippet(&text, 200)));
     }
 
     let json: serde_json::Value = serde_json::from_str(&text)
@@ -109,7 +113,7 @@ async fn chat_openai(req: ChatRequest) -> Result<ChatResponse, String> {
     let text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
 
     if !status.is_success() {
-        return Err(format!("API 错误 ({}): {}", status.as_u16(), &text[..text.len().min(200)]));
+        return Err(format!("API 错误 ({}): {}", status.as_u16(), error_snippet(&text, 200)));
     }
 
     let json: serde_json::Value = serde_json::from_str(&text)

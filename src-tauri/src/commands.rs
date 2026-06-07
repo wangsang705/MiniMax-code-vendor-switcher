@@ -1,4 +1,5 @@
 use crate::db::{self, VendorInstance};
+use crate::claude_config;
 use crate::detector;
 use crate::keyring_store;
 use crate::launcher;
@@ -10,6 +11,33 @@ use std::sync::Mutex;
 use tauri::State;
 
 const KEYRING_SERVICE: &str = "MiniMax-vendor-switcher";
+
+fn provider_account(provider_id: &str) -> String {
+    format!("provider:{}", provider_id)
+}
+
+fn binding_account(binding_id: &str) -> String {
+    format!("binding:{}", binding_id)
+}
+
+fn provider_has_key(state: &State<AppState>, provider_id: &str) -> Result<bool, String> {
+    let account = provider_account(provider_id);
+    if let Ok(key) = keyring_store::get_key(KEYRING_SERVICE, &account) {
+        if !key.trim().is_empty() {
+            return Ok(true);
+        }
+    }
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    Ok(db::get_provider_legacy_api_key(&conn, provider_id)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|key| !key.trim().is_empty()))
+}
+
+fn hydrate_provider(state: &State<AppState>, mut provider: db::Provider) -> Result<db::Provider, String> {
+    provider.has_api_key = provider_has_key(state, &provider.id)?;
+    Ok(provider)
+}
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -42,11 +70,12 @@ pub struct CreateVendorInput { pub preset_id: Option<String>, pub name: String, 
 
 #[tauri::command]
 pub fn create_vendor(state: State<AppState>, input: CreateVendorInput) -> Result<VendorInstance, String> {
+    let CreateVendorInput { preset_id, name, api_base, model, api_key } = input;
     let id = uuid::Uuid::new_v4().to_string();
     let keyring_key = format!("vendor:{}", id);
-    let v = VendorInstance { id: id.clone(), preset_id: input.preset_id, name: input.name, api_base: input.api_base, model: input.model, keyring_key: keyring_key.clone(), created_at: now_ts(), updated_at: now_ts() };
+    let v = VendorInstance { id: id.clone(), preset_id, name, api_base, model, keyring_key: keyring_key.clone(), created_at: now_ts(), updated_at: now_ts() };
     { let conn = state.db.lock().map_err(|e| e.to_string())?; db::insert_vendor(&conn, &v).map_err(|e| e.to_string())?; }
-    if let Err(e) = keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &input.api_key) {
+    if let Err(e) = keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &api_key) {
         if let Ok(conn) = state.db.lock() { let _ = db::delete_vendor(&conn, &id); }
         return Err(format!("Keyring 写入失败: {}", e));
     }
@@ -58,14 +87,15 @@ pub struct UpdateVendorInput { pub id: String, pub name: String, pub api_base: S
 
 #[tauri::command]
 pub fn update_vendor(state: State<AppState>, input: UpdateVendorInput) -> Result<VendorInstance, String> {
+    let UpdateVendorInput { id, name, api_base, model, api_key } = input;
     let (updated, is_active) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let mut existing = db::get_vendor(&conn, &input.id).map_err(|e| e.to_string())?.ok_or_else(|| "vendor not found".to_string())?;
-        existing.name = input.name; existing.api_base = input.api_base; existing.model = input.model; existing.updated_at = now_ts();
-        if let Some(ref key) = input.api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &existing.keyring_key, key).map_err(|e| format!("Keyring 写入失败: {}", e))?; } }
+        let mut existing = db::get_vendor(&conn, &id).map_err(|e| e.to_string())?.ok_or_else(|| "vendor not found".to_string())?;
+        existing.name = name; existing.api_base = api_base; existing.model = model; existing.updated_at = now_ts();
+        if let Some(ref key) = api_key { if !key.is_empty() { keyring_store::set_key(KEYRING_SERVICE, &existing.keyring_key, key).map_err(|e| format!("Keyring 写入失败: {}", e))?; } }
         db::update_vendor(&conn, &existing).map_err(|e| e.to_string())?;
         let active = conn.query_row("SELECT value FROM settings WHERE key='active_vendor'", [], |r| r.get::<_, String>(0)).ok();
-        (existing, active.as_deref() == Some(&input.id))
+        (existing, active.as_deref() == Some(&id))
     };
     if is_active {
         let api_key = keyring_store::get_key(KEYRING_SERVICE, &updated.keyring_key).map_err(|e| format!("Keyring 读取失败: {}", e))?;
@@ -129,7 +159,16 @@ pub fn detect_installed_tools(state: State<AppState>) -> Result<Vec<detector::De
 pub fn list_tools(state: State<AppState>) -> Result<Vec<db::Tool>, String> { let conn = state.db.lock().map_err(|e| e.to_string())?; db::list_tools(&conn).map_err(|e| e.to_string()) }
 
 #[tauri::command]
-pub fn list_providers(state: State<AppState>) -> Result<Vec<db::Provider>, String> { let conn = state.db.lock().map_err(|e| e.to_string())?; db::list_providers(&conn).map_err(|e| e.to_string()) }
+pub fn list_providers(state: State<AppState>) -> Result<Vec<db::Provider>, String> {
+    let providers = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::list_providers(&conn).map_err(|e| e.to_string())?
+    };
+    providers
+        .into_iter()
+        .map(|provider| hydrate_provider(&state, provider))
+        .collect()
+}
 
 #[tauri::command]
 pub fn list_models(state: State<AppState>) -> Result<Vec<db::Model>, String> { let conn = state.db.lock().map_err(|e| e.to_string())?; db::list_models(&conn).map_err(|e| e.to_string()) }
@@ -139,14 +178,55 @@ pub struct CreateProviderInput { pub id: String, pub name: String, pub api_base:
 
 #[tauri::command]
 pub fn create_provider(state: State<AppState>, input: CreateProviderInput) -> Result<db::Provider, String> {
-    let p = db::Provider { id: input.id.clone(), name: input.name, api_base: input.api_base, anthropic_mode: input.anthropic_mode, api_key: input.api_key.clone(), created_at: now_ts(), updated_at: now_ts() };
-    let conn = state.db.lock().map_err(|e| e.to_string())?; db::insert_provider(&conn, &p).map_err(|e| e.to_string())?;
-    Ok(p)
+    let CreateProviderInput { id, name, api_base, anthropic_mode, api_key } = input;
+    let p = db::Provider { id: id.clone(), name, api_base, anthropic_mode, has_api_key: false, created_at: now_ts(), updated_at: now_ts() };
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::insert_provider(&conn, &p).map_err(|e| e.to_string())?;
+    drop(conn);
+    if let Some(key) = api_key.as_deref().filter(|k| !k.is_empty()) {
+        let account = provider_account(&p.id);
+        if let Err(e) = keyring_store::set_key(KEYRING_SERVICE, &account, key) {
+            let conn = state.db.lock().map_err(|err| err.to_string())?;
+            let _ = db::delete_provider(&conn, &id);
+            return Err(format!("Keyring 写入失败: {}", e));
+        }
+    }
+    hydrate_provider(&state, p)
 }
 
 #[tauri::command]
 pub fn delete_provider(state: State<AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?; db::delete_provider(&conn, &id).map_err(|e| e.to_string())
+    let (provider_key, binding_accounts) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let provider_key = provider_account(&id);
+        let bindings = db::list_bindings_by_provider(&conn, &id).map_err(|e| e.to_string())?;
+        let binding_accounts = bindings
+            .into_iter()
+            .filter_map(|b| b.keyring_key)
+            .collect::<Vec<_>>();
+        (provider_key, binding_accounts)
+    };
+
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::delete_provider_cascade(&conn, &id).map_err(|e| e.to_string())?;
+    }
+
+    let mut keyring_errors = Vec::new();
+    if let Err(e) = keyring_store::delete_key(KEYRING_SERVICE, &provider_key) {
+        keyring_errors.push(format!("provider key: {}", e));
+    }
+    for account in binding_accounts {
+        if let Err(e) = keyring_store::delete_key(KEYRING_SERVICE, &account) {
+            keyring_errors.push(format!("binding {}: {}", account, e));
+        }
+    }
+
+    if keyring_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("厂商已删除，但部分 Keyring 清理失败: {}", keyring_errors.join("; ")))
+    }
 }
 
 #[tauri::command]
@@ -157,9 +237,22 @@ pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: Strin
         models.into_iter().find(|m| m.id == model_id).map(|m| m.model_id).ok_or_else(|| "模型未找到".to_string())?
     };
     let api_key = fetch_provider_key(&state, &provider_id)?;
+    let previous_bindings = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::list_bindings_by_tool(&conn, &tool_id).map_err(|e| e.to_string())?
+    };
     let binding_id = uuid::Uuid::new_v4().to_string();
-    let keyring_key = format!("binding:{}", binding_id);
+    let keyring_key = binding_account(&binding_id);
     keyring_store::set_key(KEYRING_SERVICE, &keyring_key, &api_key).map_err(|e| format!("Keyring 写入失败: {}", e))?;
+    for binding in previous_bindings {
+        if let Some(account) = binding.keyring_key {
+            let _ = keyring_store::delete_key(KEYRING_SERVICE, &account);
+        }
+    }
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::delete_bindings_by_tool(&conn, &tool_id).map_err(|e| e.to_string())?;
+    }
     let now = now_ts();
     let binding = db::ToolBinding { id: binding_id.clone(), tool_id: tool_id.clone(), provider_id: provider_id.clone(), model_id: model_id.clone(), keyring_key: Some(keyring_key), is_active: true, created_at: now, updated_at: now };
     { let conn = state.db.lock().map_err(|e| e.to_string())?; db::set_active_binding(&conn, &binding_id, &tool_id).map_err(|e| e.to_string())?; db::upsert_binding(&conn, &binding).map_err(|e| e.to_string())?; }
@@ -169,16 +262,26 @@ pub fn apply_binding(state: State<AppState>, tool_id: String, provider_id: Strin
 
 fn fetch_provider_key(state: &State<AppState>, provider_id: &str) -> Result<String, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let providers = db::list_providers(&conn).map_err(|e| e.to_string())?;
-    providers.into_iter().find(|p| p.id == provider_id)
-        .and_then(|p| p.api_key)
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| "该厂商未保存 API Key，请在模型中心编辑厂商并填写 API Key".to_string())
+    let account = provider_account(provider_id);
+    match keyring_store::get_key(KEYRING_SERVICE, &account) {
+        Ok(key) if !key.trim().is_empty() => Ok(key),
+        _ => {
+            let legacy = db::get_provider_legacy_api_key(&conn, provider_id).map_err(|e| e.to_string())?;
+            let key = legacy.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
+                "该厂商未保存 API Key，请在模型中心编辑厂商并填写 API Key".to_string()
+            })?;
+            drop(conn);
+            keyring_store::set_key(KEYRING_SERVICE, &account, &key)
+                .map_err(|e| format!("Keyring 写入失败: {}", e))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            let _ = db::clear_provider_legacy_api_key(&conn, provider_id);
+            Ok(key)
+        }
+    }
 }
 
 fn apply_config_for_tool(state: &State<AppState>, tool_id: &str, provider_id: &str, model_name: &str, api_key: &str) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let tool = db::get_tool(&conn, tool_id).map_err(|e| e.to_string())?.ok_or_else(|| format!("工具未找到: {}", tool_id))?;
     let provider = db::list_providers(&conn).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == provider_id).ok_or_else(|| format!("厂商未找到: {}", provider_id))?;
     drop(conn);
     match tool_id {
@@ -186,11 +289,75 @@ fn apply_config_for_tool(state: &State<AppState>, tool_id: &str, provider_id: &s
         "claude-code-cli" => {
             let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).ok_or_else(|| "无法找到用户目录".to_string())?;
             let path = home.join(".claude").join("settings.json");
-            let settings = if path.exists() { let c = std::fs::read_to_string(&path).map_err(|e| e.to_string())?; serde_json::from_str(&c).unwrap_or_else(|_| serde_json::json!({})) } else { serde_json::json!({}) };
-            let mut settings = match settings { serde_json::Value::Object(map) => map, _ => return Err("settings.json 格式错误".to_string()) };
-            settings.insert("env".to_string(), serde_json::json!({ "ANTHROPIC_BASE_URL": provider.api_base, "ANTHROPIC_AUTH_TOKEN": api_key, "ANTHROPIC_MODEL": model_name }));
-            std::fs::write(&path, serde_json::to_string_pretty(&serde_json::Value::Object(settings)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            let mut updates = std::collections::HashMap::new();
+            updates.insert("ANTHROPIC_BASE_URL".to_string(), provider.api_base.clone());
+            updates.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key.to_string());
+            updates.insert("ANTHROPIC_MODEL".to_string(), model_name.to_string());
+            claude_config::merge_and_write_env(&path, &updates)
+                .map_err(|e| format!("Claude 配置写入失败: {}", e))?;
         }
+        "claude-desktop" => {
+            let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).ok_or_else(|| "无法找到用户目录".to_string())?;
+            let path = home.join(".claude").join("settings.json");
+            let mut updates = std::collections::HashMap::new();
+            updates.insert("ANTHROPIC_BASE_URL".to_string(), provider.api_base.clone());
+            updates.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key.to_string());
+            updates.insert("ANTHROPIC_MODEL".to_string(), model_name.to_string());
+            claude_config::merge_and_write_env(&path, &updates)
+                .map_err(|e| format!("Claude 桌面端配置写入失败: {}", e))?;
+        }
+        "codex-cli" => crate::tool_configs::apply_codex(
+            provider_id,
+            &provider.name,
+            &provider.api_base,
+            model_name,
+            api_key,
+        ).map_err(|e| format!("Codex 配置写入失败: {}", e))?,
+        "codex-desktop" => crate::tool_configs::apply_codex(
+            provider_id,
+            &provider.name,
+            &provider.api_base,
+            model_name,
+            api_key,
+        ).map_err(|e| format!("Codex 桌面端配置写入失败: {}", e))?,
+        "opencode-cli" => crate::tool_configs::apply_opencode(
+            provider_id,
+            &provider.name,
+            &provider.api_base,
+            model_name,
+            api_key,
+            provider.anthropic_mode,
+        ).map_err(|e| format!("OpenCode 配置写入失败: {}", e))?,
+        "qwen-code-cli" => crate::tool_configs::apply_qwen(
+            provider_id,
+            &provider.name,
+            &provider.api_base,
+            model_name,
+            api_key,
+            provider.anthropic_mode,
+        ).map_err(|e| format!("Qwen 配置写入失败: {}", e))?,
+        "aider-cli" => crate::tool_configs::apply_aider(
+            &provider.api_base,
+            model_name,
+            api_key,
+            provider.anthropic_mode,
+        ).map_err(|e| format!("Aider 配置写入失败: {}", e))?,
+        "grok-build" => crate::tool_configs::apply_grok(
+            provider_id,
+            &provider.name,
+            &provider.api_base,
+            model_name,
+            api_key,
+            provider.anthropic_mode,
+        ).map_err(|e| format!("Grok 配置写入失败: {}", e))?,
+        "kimi-cli" => crate::tool_configs::apply_kimi(
+            provider_id,
+            &provider.name,
+            &provider.api_base,
+            model_name,
+            api_key,
+            provider.anthropic_mode,
+        ).map_err(|e| format!("Kimi 配置写入失败: {}", e))?,
         "openclaw" => crate::agent_adapters::apply_openclaw(&provider.name, &provider.api_base, model_name, api_key).map_err(|e| format!("OpenClaw 配置写入失败: {}", e))?,
         "hermes-agent" => crate::agent_adapters::apply_hermes(provider_id, &provider.api_base, model_name, api_key).map_err(|e| format!("Hermes Agent 配置写入失败: {}", e))?,
         "nanobot" => crate::agent_adapters::apply_nanobot(provider_id, &provider.api_base, model_name, api_key).map_err(|e| format!("Nanobot 配置写入失败: {}", e))?,
@@ -204,7 +371,22 @@ pub fn launch_tool(state: State<AppState>, tool_id: String) -> Result<u32, Strin
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let tool = db::get_tool(&conn, &tool_id).map_err(|e| e.to_string())?.ok_or_else(|| format!("工具未找到: {}", tool_id))?;
     drop(conn);
-    if let Some(ref cmd) = tool.launch_command { return Ok(std::process::Command::new(cmd).spawn().map_err(|e| format!("启动失败: {}", e))?.id()); }
+    if tool.id == "minimax-code-desktop" {
+        return launcher::launch_minimax_desktop().map_err(|e| format!("启动失败: {}", e));
+    }
+    if tool.id == "claude-desktop" {
+        return launcher::launch_claude_desktop().map_err(|e| format!("启动失败: {}", e));
+    }
+    if tool.id == "codex-desktop" {
+        return launcher::launch_codex_desktop().map_err(|e| format!("启动失败: {}", e));
+    }
+    if tool.id == "gemini-desktop" {
+        return launcher::launch_gemini_desktop().map_err(|e| format!("启动失败: {}", e));
+    }
+    if let Some(ref cmd) = tool.launch_command {
+        let binary = launcher::find_cli_command(cmd).unwrap_or_else(|| PathBuf::from(cmd));
+        return Ok(std::process::Command::new(binary).spawn().map_err(|e| format!("启动失败: {}", e))?.id());
+    }
     if let Some(ref path) = tool.launch_path { return Ok(std::process::Command::new(path).spawn().map_err(|e| format!("启动失败: {}", e))?.id()); }
     Err(format!("{} 没有配置启动方式", tool.name))
 }
@@ -220,16 +402,42 @@ pub fn get_tool_binding(state: State<AppState>, tool_id: String) -> Result<Optio
 }
 
 #[tauri::command]
-pub fn unbind_tool(state: State<AppState>, binding_id: String) -> Result<(), String> { let conn = state.db.lock().map_err(|e| e.to_string())?; db::delete_binding(&conn, &binding_id).map_err(|e| e.to_string()) }
+pub fn unbind_tool(state: State<AppState>, binding_id: String) -> Result<(), String> {
+    let binding = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::list_bindings(&conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|b| b.id == binding_id)
+    };
+
+    let Some(binding) = binding else { return Ok(()); };
+
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::delete_binding(&conn, &binding_id).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(account) = binding.keyring_key {
+        keyring_store::delete_key(KEYRING_SERVICE, &account)
+            .map_err(|e| format!("Keyring 清理失败: {}", e))?;
+    }
+
+    Ok(())
+}
 
 #[tauri::command]
 pub fn update_provider(state: State<AppState>, input: CreateProviderInput) -> Result<db::Provider, String> {
+    let CreateProviderInput { id, name, api_base, anthropic_mode, api_key } = input;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut provider = db::list_providers(&conn).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == input.id).ok_or_else(|| "厂商未找到".to_string())?;
-    provider.name = input.name; provider.api_base = input.api_base; provider.anthropic_mode = input.anthropic_mode; provider.updated_at = now_ts();
-    if let Some(key) = &input.api_key { if !key.is_empty() { provider.api_key = Some(key.clone()); } }
+    let mut provider = db::list_providers(&conn).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == id).ok_or_else(|| "厂商未找到".to_string())?;
+    provider.name = name; provider.api_base = api_base; provider.anthropic_mode = anthropic_mode; provider.updated_at = now_ts();
+    if let Some(key) = api_key.as_deref().filter(|k| !k.is_empty()) {
+        let account = provider_account(&provider.id);
+        keyring_store::set_key(KEYRING_SERVICE, &account, key).map_err(|e| format!("Keyring 写入失败: {}", e))?;
+    }
     db::update_provider(&conn, &provider).map_err(|e| e.to_string())?;
-    Ok(provider)
+    hydrate_provider(&state, provider)
 }
 
 #[derive(serde::Deserialize)]
@@ -240,6 +448,44 @@ pub fn create_model(state: State<AppState>, input: CreateModelInput) -> Result<d
     let id = format!("{}/{}", input.provider_id, input.model_id); let now = now_ts();
     let m = db::Model { id, provider_id: input.provider_id, name: input.name, model_id: input.model_id, context_length: input.context_length, max_output: input.max_output, supports_attachment: false, supports_reasoning: true, supports_tool_call: true, supports_vision: false, created_at: now, updated_at: now };
     let conn = state.db.lock().map_err(|e| e.to_string())?; db::insert_model(&conn, &m).map_err(|e| e.to_string())?; Ok(m)
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateModelInput {
+    pub id: String,
+    pub provider_id: String,
+    pub name: String,
+    pub model_id: String,
+    pub context_length: i64,
+    pub max_output: i64,
+}
+
+#[tauri::command]
+pub fn update_model(state: State<AppState>, input: UpdateModelInput) -> Result<db::Model, String> {
+    let now = now_ts();
+    let m = db::Model {
+        id: input.id,
+        provider_id: input.provider_id,
+        name: input.name,
+        model_id: input.model_id,
+        context_length: input.context_length,
+        max_output: input.max_output,
+        supports_attachment: false,
+        supports_reasoning: true,
+        supports_tool_call: true,
+        supports_vision: false,
+        created_at: now,
+        updated_at: now,
+    };
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::update_model(&conn, &m).map_err(|e| e.to_string())?;
+    Ok(m)
+}
+
+#[tauri::command]
+pub fn delete_model(state: State<AppState>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_model(&conn, &id).map_err(|e| e.to_string())
 }
 
 // ===== AI 对话 =====
@@ -260,6 +506,3 @@ pub async fn chat_send(input: ChatInput) -> Result<crate::llm_chat::ChatResponse
 pub fn get_install_info(tool_id: String) -> Result<Option<crate::installer::InstallInfo>, String> { Ok(crate::installer::get_install_info(&tool_id)) }
 #[tauri::command]
 pub fn install_tool(tool_id: String) -> Result<String, String> { crate::installer::run_install(&tool_id) }
-
-#[tauri::command]
-pub fn get_provider_key(state: State<AppState>, provider_id: String) -> Result<String, String> { fetch_provider_key(&state, &provider_id) }

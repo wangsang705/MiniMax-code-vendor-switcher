@@ -12,19 +12,98 @@ pub fn find_minimax_desktop() -> Option<PathBuf> {
     None
 }
 
+pub fn find_claude_desktop() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(&local_app_data).join("AnthropicClaude").join("Claude.exe"));
+        candidates.push(PathBuf::from(local_app_data).join("Programs").join("Claude").join("Claude.exe"));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+pub fn find_codex_desktop() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let base = PathBuf::from(local_app_data);
+        candidates.push(base.join("Programs").join("Codex").join("Codex.exe"));
+        candidates.push(base.join("Programs").join("Codex++").join("codex-plus-plus.exe"));
+        candidates.push(base.join("OpenAI").join("Codex").join("codex.exe"));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+pub fn find_gemini_desktop() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|base| base.join("Programs").join("Gemini").join("Gemini.exe"))
+        .filter(|path| path.is_file())
+}
+
+pub fn find_cli_command(cmd: &str) -> Option<PathBuf> {
+    which(cmd).ok().or_else(|| {
+        let home = dirs_home()?;
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let app_data = std::env::var_os("APPDATA").map(PathBuf::from);
+
+        let candidates = match cmd {
+            "qwen" => vec![
+                app_data.as_ref().map(|p| p.join("npm").join("qwen.cmd")),
+                Some(home.join(".local").join("bin").join("qwen.exe")),
+                Some(home.join(".bun").join("bin").join("qwen.exe")),
+                Some(home.join("scoop").join("shims").join("qwen.exe")),
+                local_app_data.as_ref().map(|p| p.join("pnpm").join("qwen.exe")),
+            ],
+            "kimi" => vec![
+                Some(home.join(".kimi").join("bin").join("kimi.exe")),
+                app_data.as_ref().map(|p| p.join("npm").join("kimi.cmd")),
+                Some(home.join(".local").join("bin").join("kimi.exe")),
+                Some(home.join(".bun").join("bin").join("kimi.exe")),
+            ],
+            "aider" => vec![
+                Some(home.join(".local").join("bin").join("aider.exe")),
+                app_data.as_ref().map(|p| p.join("Python").join("Scripts").join("aider.exe")),
+                local_app_data.as_ref().map(|p| p.join("Programs").join("Python").join("Python312").join("Scripts").join("aider.exe")),
+                local_app_data.as_ref().map(|p| p.join("Programs").join("Python").join("Python311").join("Scripts").join("aider.exe")),
+                local_app_data.as_ref().map(|p| p.join("Programs").join("Python").join("Python310").join("Scripts").join("aider.exe")),
+            ],
+            "opencode" => vec![
+                app_data.as_ref().map(|p| p.join("npm").join("opencode.cmd")),
+                local_app_data.as_ref().map(|p| p.join("Programs").join("opencode").join("opencode.exe")),
+                Some(home.join("scoop").join("shims").join("opencode.exe")),
+                Some(PathBuf::from(r"C:\Program Files").join("opencode").join("opencode.exe")),
+                Some(home.join(".bun").join("bin").join("opencode.exe")),
+                Some(home.join(".opencode").join("bin").join("opencode.exe")),
+                local_app_data.as_ref().map(|p| p.join("pnpm").join("opencode.exe")),
+            ],
+            "grok" => vec![
+                Some(home.join(".grok").join("bin").join("grok.exe")),
+                Some(home.join(".local").join("bin").join("grok.exe")),
+                local_app_data.as_ref().map(|p| p.join("Programs").join("grok").join("grok.exe")),
+                Some(home.join(".bun").join("bin").join("grok.exe")),
+                local_app_data.as_ref().map(|p| p.join("pnpm").join("grok.exe")),
+            ],
+            "coffee-cli" => vec![
+                local_app_data.as_ref().map(|p| p.join("Coffee CLI").join("coffee-cli.exe")),
+                app_data.as_ref().map(|p| p.join("npm").join("coffee-cli.cmd")),
+            ],
+            _ => Vec::new(),
+        };
+
+        candidates.into_iter().flatten().find(|path| path.is_file())
+    })
+}
+
 fn desktop_candidate_paths() -> Vec<PathBuf> {
     let mut list = Vec::new();
 
     // 1) 桌面快捷方式所在路径（用户自定义安装）
     if let Some(home) = dirs_home() {
-        // 常见用户自定义安装路径
         list.push(
             home.join("Desktop")
                 .join("ai编程")
                 .join("MiniMax Code")
                 .join("MiniMax Code.exe"),
         );
-        // 另一种可能的桌面安装路径
         list.push(
             home.join("Desktop")
                 .join("MiniMax Code")
@@ -39,6 +118,34 @@ fn desktop_candidate_paths() -> Vec<PathBuf> {
     }
 
     list
+}
+
+pub fn launch_minimax_desktop() -> std::io::Result<u32> {
+    let path = find_minimax_desktop().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "MiniMax Code desktop app not found")
+    })?;
+    let child = Command::new(path).spawn()?;
+    Ok(child.id())
+}
+
+fn launch_specific(path: Option<PathBuf>, label: &str) -> std::io::Result<u32> {
+    let binary = path.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, format!("{label} not found"))
+    })?;
+    let child = Command::new(binary).spawn()?;
+    Ok(child.id())
+}
+
+pub fn launch_claude_desktop() -> std::io::Result<u32> {
+    launch_specific(find_claude_desktop(), "Claude desktop app")
+}
+
+pub fn launch_codex_desktop() -> std::io::Result<u32> {
+    launch_specific(find_codex_desktop(), "Codex desktop app")
+}
+
+pub fn launch_gemini_desktop() -> std::io::Result<u32> {
+    launch_specific(find_gemini_desktop(), "Gemini desktop app")
 }
 
 fn dirs_home() -> Option<PathBuf> {

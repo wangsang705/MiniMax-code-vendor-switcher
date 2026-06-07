@@ -1,3 +1,4 @@
+use crate::keyring_store;
 use rusqlite::{Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -21,14 +22,14 @@ pub struct Tool {
     pub updated_at: i64,
 }
 
-/// 厂商/供应商（api_key 直接存数据库，避免 keyring 问题）
+/// 厂商/供应商（API Key 通过 keyring 存储；api_key 列仅用于旧数据迁移）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Provider {
     pub id: String,
     pub name: String,
     pub api_base: String,
     pub anthropic_mode: bool,
-    pub api_key: Option<String>,
+    pub has_api_key: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -80,7 +81,7 @@ pub struct VendorInstance {
 
 pub fn init_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     conn.execute_batch("ALTER TABLE providers ADD COLUMN api_key TEXT;").ok();
 
     conn.execute_batch(
@@ -126,7 +127,7 @@ pub fn init_db(path: &Path) -> Result<Connection> {
             supports_vision INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            FOREIGN KEY (provider_id) REFERENCES providers(id)
+            FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
         );
 
         -- 工具-厂商绑定表
@@ -139,9 +140,9 @@ pub fn init_db(path: &Path) -> Result<Connection> {
             is_active INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            FOREIGN KEY (tool_id) REFERENCES tools(id),
-            FOREIGN KEY (provider_id) REFERENCES providers(id),
-            FOREIGN KEY (model_id) REFERENCES models(id)
+            FOREIGN KEY (tool_id) REFERENCES tools(id) ON DELETE CASCADE,
+            FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE CASCADE
         );
 
         -- 保留旧 settings 表做迁移
@@ -165,7 +166,9 @@ pub fn init_db(path: &Path) -> Result<Connection> {
     )?;
 
     migrate_from_v1(&conn).ok();
+    migrate_legacy_provider_keys(&conn).ok();
     seed_default_tools(&conn).ok();
+    normalize_tool_configs(&conn).ok();
     seed_default_providers(&conn).ok();
 
     Ok(conn)
@@ -182,8 +185,12 @@ fn seed_default_tools(conn: &Connection) -> Result<()> {
     let defaults = vec![
         ("claude-code-cli", "Claude Code CLI", "cli",
          Some("~/.claude/settings.json"), "json",
-         Some("claude"), None,
+         Some("claude"), None::<&str>,
          r#"["claude"]"#, r#"[]"#),
+        ("claude-desktop", "Claude 桌面端", "desktop",
+         Some("~/.claude/settings.json"), "json",
+         None, None,
+         r#"[]"#, r#"["Claude.exe"]"#),
         ("minimax-code-cli", "MiniMax Code CLI", "cli",
          Some("~/.minimax/config.yaml"), "yaml",
          Some("minimax"), None,
@@ -191,24 +198,44 @@ fn seed_default_tools(conn: &Connection) -> Result<()> {
         ("minimax-code-desktop", "MiniMax Code 桌面版", "desktop",
          Some("~/.minimax/config.yaml"), "yaml",
          None,
-         Some("C:\\Users\\liuxinze\\Desktop\\ai编程\\MiniMax Code\\MiniMax Code.exe"),
+         None,
          r#"[]"#, r#"["MiniMax Code.exe"]"#),
         ("codex-cli", "Codex CLI", "cli",
-         Some("~/.codex/settings.json"), "json",
+         Some("~/.codex/config.toml"), "toml",
          Some("codex"), None,
          r#"["codex"]"#, r#"[]"#),
+        ("codex-desktop", "Codex 桌面端", "desktop",
+         Some("~/.codex/config.toml"), "toml",
+         None, None,
+         r#"[]"#, r#"["Codex.exe"]"#),
+        ("gemini-desktop", "Gemini 桌面端", "desktop",
+         Some("~/.gemini/settings.json"), "json",
+         None, None,
+         r#"[]"#, r#"["Gemini.exe"]"#),
         ("qwen-code-cli", "Qwen Code CLI", "cli",
          Some("~/.qwen/settings.json"), "json",
          Some("qwen"), None,
          r#"["qwen"]"#, r#"[]"#),
+        ("aider-cli", "Aider CLI", "cli",
+         Some("~/.aider.conf.yml"), "yaml",
+         Some("aider"), None,
+         r#"["aider"]"#, r#"[]"#),
+        ("coffee-cli", "Coffee CLI", "cli",
+         Some("~/.coffee-cli/config.json"), "json",
+         Some("coffee-cli"), None,
+         r#"["coffee-cli"]"#, r#"[]"#),
         ("opencode-cli", "OpenCode CLI", "cli",
-         None, "yaml",
+         Some("~/.opencode/config.json"), "json",
          Some("opencode"), None,
          r#"["opencode"]"#, r#"[]"#),
         ("kimi-cli", "Kimi CLI", "cli",
-         None, "env",
+         Some("~/.kimi/config.toml"), "toml",
          Some("kimi"), None,
          r#"["kimi"]"#, r#"[]"#),
+        ("grok-build", "Grok Build", "cli",
+         Some("~/.grok/config.toml"), "toml",
+         Some("grok"), None,
+         r#"["grok"]"#, r#"[]"#),
         ("openclaw", "OpenClaw", "agent",
          Some("~/.openclaw/openclaw.json"), "json5",
          Some("openclaw"), None,
@@ -235,27 +262,31 @@ fn seed_default_tools(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn seed_default_providers(conn: &Connection) -> Result<()> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+fn seed_default_providers(_conn: &Connection) -> Result<()> {
+    Ok(())
+}
 
-    let defaults: Vec<(&str, &str, &str, bool)> = vec![
-        ("minimax", "MiniMax", "https://agent.minimaxi.com/mavis/api/v1/llm/v1", true),
-        ("deepseek", "DeepSeek", "https://api.deepseek.com/anthropic", true),
-        ("kimi", "Kimi (月之暗面)", "https://api.moonshot.cn/v1", false),
-        ("zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", false),
-        ("qwen", "Qwen (通义千问)", "https://dashscope.aliyuncs.com/compatible-mode/v1", false),
-    ];
-
-    for (id, name, api_base, anthropic_mode) in defaults {
-        conn.execute(
-            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, api_key, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
-            rusqlite::params![id, name, api_base, anthropic_mode as i32, now, now],
-        )?;
-    }
+fn normalize_tool_configs(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE tools SET config_path = ?1, config_format = 'toml' WHERE id = 'codex-cli'",
+        ["~/.codex/config.toml"],
+    )?;
+    conn.execute(
+        "UPDATE tools SET config_path = ?1, config_format = 'json' WHERE id = 'opencode-cli'",
+        ["~/.opencode/config.json"],
+    )?;
+    conn.execute(
+        "UPDATE tools SET config_path = ?1, config_format = 'json' WHERE id = 'qwen-code-cli'",
+        ["~/.qwen/settings.json"],
+    )?;
+    conn.execute(
+        "UPDATE tools SET config_path = ?1, config_format = 'yaml' WHERE id = 'aider-cli'",
+        ["~/.aider.conf.yml"],
+    )?;
+    conn.execute(
+        "UPDATE tools SET config_path = ?1, config_format = 'toml' WHERE id = 'kimi-cli'",
+        ["~/.kimi/config.toml"],
+    )?;
     Ok(())
 }
 
@@ -311,6 +342,28 @@ fn migrate_from_v1(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_legacy_provider_keys(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, api_key FROM providers WHERE api_key IS NOT NULL AND trim(api_key) <> ''",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    for row in rows {
+        let (provider_id, api_key) = row?;
+        let account = format!("provider:{}", provider_id);
+        if keyring_store::set_key("MiniMax-vendor-switcher", &account, &api_key).is_ok() {
+            conn.execute(
+                "UPDATE providers SET api_key = NULL WHERE id = ?1",
+                [&provider_id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 // ===== 工具 CRUD =====
 
 pub fn list_tools(conn: &Connection) -> Result<Vec<Tool>> {
@@ -351,14 +404,15 @@ fn map_tool(row: &rusqlite::Row) -> rusqlite::Result<Tool> {
 
 pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, api_base, anthropic_mode, api_key, created_at, updated_at
+        "SELECT id, name, api_base, anthropic_mode, created_at, updated_at
          FROM providers ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(Provider {
             id: row.get(0)?, name: row.get(1)?, api_base: row.get(2)?,
-            anthropic_mode: row.get::<_, i32>(3)? != 0, api_key: row.get(4)?,
-            created_at: row.get(5)?, updated_at: row.get(6)?,
+            anthropic_mode: row.get::<_, i32>(3)? != 0,
+            has_api_key: false,
+            created_at: row.get(4)?, updated_at: row.get(5)?,
         })
     })?;
     let mut out = Vec::new();
@@ -371,8 +425,8 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<Provider>> {
 pub fn insert_provider(conn: &Connection, p: &Provider) -> Result<()> {
     conn.execute(
         "INSERT INTO providers (id, name, api_base, anthropic_mode, api_key, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.api_key, p.created_at, p.updated_at],
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
+        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.created_at, p.updated_at],
     )?;
     Ok(())
 }
@@ -382,10 +436,21 @@ pub fn delete_provider(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn get_provider_legacy_api_key(conn: &Connection, id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT api_key FROM providers WHERE id = ?1")?;
+    let mut iter = stmt.query_map([id], |row| row.get::<_, Option<String>>(0))?;
+    Ok(iter.next().transpose()?.flatten())
+}
+
+pub fn clear_provider_legacy_api_key(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("UPDATE providers SET api_key = NULL WHERE id = ?1", [id])?;
+    Ok(())
+}
+
 pub fn update_provider(conn: &Connection, p: &Provider) -> Result<()> {
     conn.execute(
-        "UPDATE providers SET name=?2, api_base=?3, anthropic_mode=?4, api_key=?5, updated_at=?6 WHERE id=?1",
-        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.api_key, p.updated_at],
+        "UPDATE providers SET name=?2, api_base=?3, anthropic_mode=?4, updated_at=?5 WHERE id=?1",
+        rusqlite::params![p.id, p.name, p.api_base, p.anthropic_mode as i32, p.updated_at],
     )?;
     Ok(())
 }
@@ -435,6 +500,25 @@ pub fn insert_model(conn: &Connection, m: &Model) -> Result<()> {
             m.created_at, m.updated_at
         ],
     )?;
+    Ok(())
+}
+
+pub fn update_model(conn: &Connection, m: &Model) -> Result<()> {
+    conn.execute(
+        "UPDATE models SET provider_id=?2, name=?3, model_id=?4, context_length=?5, max_output=?6,
+         supports_attachment=?7, supports_reasoning=?8, supports_tool_call=?9, supports_vision=?10,
+         updated_at=?11 WHERE id=?1",
+        rusqlite::params![
+            m.id, m.provider_id, m.name, m.model_id, m.context_length, m.max_output,
+            m.supports_attachment as i32, m.supports_reasoning as i32,
+            m.supports_tool_call as i32, m.supports_vision as i32, m.updated_at
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_model(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM models WHERE id = ?1", [id])?;
     Ok(())
 }
 
@@ -501,6 +585,44 @@ pub fn upsert_binding(conn: &Connection, b: &ToolBinding) -> Result<()> {
 
 pub fn delete_binding(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM tool_bindings WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+pub fn list_bindings_by_tool(conn: &Connection, tool_id: &str) -> Result<Vec<ToolBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tool_id, provider_id, model_id, keyring_key, is_active, created_at, updated_at
+         FROM tool_bindings WHERE tool_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([tool_id], map_binding)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn list_bindings_by_provider(conn: &Connection, provider_id: &str) -> Result<Vec<ToolBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tool_id, provider_id, model_id, keyring_key, is_active, created_at, updated_at
+         FROM tool_bindings WHERE provider_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([provider_id], map_binding)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn delete_bindings_by_tool(conn: &Connection, tool_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM tool_bindings WHERE tool_id = ?1", [tool_id])?;
+    Ok(())
+}
+
+pub fn delete_provider_cascade(conn: &Connection, provider_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM tool_bindings WHERE provider_id = ?1", [provider_id])?;
+    conn.execute("DELETE FROM models WHERE provider_id = ?1", [provider_id])?;
+    conn.execute("DELETE FROM providers WHERE id = ?1", [provider_id])?;
     Ok(())
 }
 

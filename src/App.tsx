@@ -1,723 +1,1244 @@
-import { useCallback, useEffect, useState, useRef } from 'react';
-import { api, DetectionResult, Tool, Provider, Model } from './api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  BookOpen,
+  Boxes,
+  BrainCircuit,
+  Cpu,
+  GraduationCap,
+  MessageSquareText,
+  PackageSearch,
+  Sparkles,
+  Star,
+  Wrench,
+} from 'lucide-react';
+import { api, DetectionResult, Model, Provider, Tool, VendorPreset } from './api';
 
-type TabId = 'tools' | 'providers' | 'chat';
+type SectionId =
+  | 'news'
+  | 'featured'
+  | 'courses'
+  | 'models'
+  | 'apps'
+  | 'local-models'
+  | 'repair'
+  | 'feedback';
 
-// ===== 主应用 =====
+type AppCategory = 'all' | 'desktop' | 'agents' | 'ide' | 'cli' | 'tools';
+
+const CUSTOM_PROVIDER_PRESET = '__custom__';
+const ANTHROPIC_PRESET_IDS = new Set(['minimax', 'deepseek']);
+const SUPPORTED_BINDING_TOOL_IDS = new Set([
+  'minimax-code-cli',
+  'minimax-code-desktop',
+  'claude-code-cli',
+  'codex-cli',
+  'codex-desktop',
+  'opencode-cli',
+  'qwen-code-cli',
+  'aider-cli',
+  'kimi-cli',
+  'claude-desktop',
+  'grok-build',
+  'openclaw',
+  'hermes-agent',
+  'nanobot',
+]);
+
+function slugifyProviderId(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function duplicateProviderNames(providers: Provider[]) {
+  return new Set(
+    Object.entries(
+      providers.reduce<Record<string, number>>((acc, provider) => {
+        const key = provider.name.trim().toLowerCase();
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+    )
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name)
+  );
+}
+
+function providerDisplayName(provider: Provider, duplicateNames: Set<string>) {
+  if (duplicateNames.has(provider.name.toLowerCase())) {
+    return `${provider.name} · ${provider.id}`;
+  }
+  return provider.name;
+}
+
+function providerTone(provider: Provider) {
+  if (provider.id.includes('deepseek') || provider.name.toLowerCase().includes('deepseek')) {
+    return 'from-sky-50 to-blue-50 border-sky-200';
+  }
+  if (provider.id.includes('minimax') || provider.name.toLowerCase().includes('minimax')) {
+    return 'from-rose-50 to-orange-50 border-rose-200';
+  }
+  if (provider.id.includes('kimi')) {
+    return 'from-amber-50 to-orange-50 border-amber-200';
+  }
+  if (provider.id.includes('zhipu')) {
+    return 'from-neutral-100 to-stone-100 border-stone-200';
+  }
+  if (provider.id.includes('qwen')) {
+    return 'from-violet-50 to-indigo-50 border-violet-200';
+  }
+  return 'from-slate-50 to-white border-slate-200';
+}
+
+function toolCategory(tool: Tool): AppCategory {
+  if (tool.category === 'agent') return 'agents';
+  if (tool.category === 'desktop') return 'desktop';
+  if (tool.id.includes('codex') || tool.id.includes('qwen') || tool.id.includes('opencode') || tool.id.includes('kimi') || tool.id.includes('claude') || tool.id.includes('minimax')) {
+    return 'cli';
+  }
+  return 'tools';
+}
+
+function toolDisplayMeta(tool: Tool) {
+  const lookup: Record<string, { title: string; icon: string; category: AppCategory; installLabel?: string }> = {
+    'claude-code-cli': { title: 'Claude 桌面端', icon: '✳', category: 'desktop' },
+    'minimax-code-desktop': { title: 'MiniMax 桌面端', icon: 'M', category: 'desktop' },
+    'codex-cli': { title: 'Codex 桌面端', icon: '☻', category: 'desktop' },
+    'aider-cli': { title: 'Aider', icon: 'A', category: 'cli' },
+    'openclaw': { title: 'OpenClaw', icon: '•', category: 'agents' },
+    'hermes-agent': { title: 'Hermes Agent', icon: '女', category: 'agents', installLabel: 'AI 自动安装' },
+    'nanobot': { title: 'NanoBot', icon: '猫', category: 'agents', installLabel: 'AI 自动安装' },
+    'opencode-cli': { title: 'OpenCode', icon: '▣', category: 'cli' },
+    'qwen-code-cli': { title: 'Qwen CLI', icon: '千', category: 'cli' },
+    'kimi-cli': { title: 'Kimi CLI', icon: 'K', category: 'cli' },
+    'minimax-code-cli': { title: 'MiniMax Code CLI', icon: 'M', category: 'cli' },
+  };
+
+  const fallback = {
+    title: tool.name,
+    icon: tool.name.slice(0, 1).toUpperCase(),
+    category: toolCategory(tool),
+  };
+
+  return lookup[tool.id] ?? fallback;
+}
+
+function trimPath(value: string | null | undefined) {
+  if (!value) return '-';
+  if (value.length <= 26) return value;
+  return `${value.slice(0, 23)}...`;
+}
+
+function toolStatus(detection: DetectionResult | undefined) {
+  return detection?.installed ? '已安装' : '未安装';
+}
+
+function appCategoryLabel(category: AppCategory) {
+  switch (category) {
+    case 'desktop':
+      return '桌面端';
+    case 'agents':
+      return 'Agents';
+    case 'ide':
+      return 'IDE';
+    case 'cli':
+      return 'CLI Code';
+    case 'tools':
+      return '工具';
+    default:
+      return '全部';
+  }
+}
+
+function formatContextLength(value: number) {
+  if (value >= 1000) return `${Math.round(value / 1000)}K`;
+  return `${value}`;
+}
+
+function formatModelStatus(provider: Provider, model: Model) {
+  if (!provider.has_api_key) return '待补全 Key';
+  if (model.supports_tool_call && model.supports_reasoning) return '就绪';
+  return '基础可用';
+}
+
+function sectionMeta(section: SectionId) {
+  switch (section) {
+    case 'models':
+      return { title: '模型中心', accent: 'ROSTER', subtitle: '管理模型厂商、模型条目与中转配置。' };
+    case 'apps':
+      return { title: '应用管理', accent: 'STUDIO', subtitle: '为桌面端、Agents 与 CLI 工具分配模型。' };
+    case 'local-models':
+      return { title: '本地大模型', accent: 'LOCAL', subtitle: '后续用于接入本地推理服务与离线模型。' };
+    case 'repair':
+      return { title: '安装与修复', accent: 'CARE', subtitle: '集中处理安装、环境检测和恢复操作。' };
+    case 'news':
+      return { title: 'AI 资讯', accent: 'NEWS', subtitle: '预留资讯流与公告位。' };
+    case 'featured':
+      return { title: '明星项目', accent: 'PICKS', subtitle: '预留精选项目与推荐场景。' };
+    case 'courses':
+      return { title: 'AI 公开课', accent: 'GUIDE', subtitle: '预留教程、文档与上手指南。' };
+    case 'feedback':
+      return { title: '问题反馈', accent: 'VOICE', subtitle: '预留反馈、日志与问题上报入口。' };
+    default:
+      return { title: '观景', accent: 'VIEW', subtitle: '统一查看模型、工具和状态。' };
+  }
+}
+
+const sidebarItems: Array<{ id: SectionId; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { id: 'news', label: 'AI 资讯', icon: BookOpen },
+  { id: 'featured', label: '明星项目', icon: Star },
+  { id: 'courses', label: 'AI 公开课', icon: GraduationCap },
+  { id: 'models', label: '模型中心', icon: Boxes },
+  { id: 'apps', label: '应用管理', icon: Cpu },
+  { id: 'local-models', label: '本地大模型', icon: BrainCircuit },
+  { id: 'repair', label: '安装与修复', icon: Wrench },
+  { id: 'feedback', label: '问题反馈', icon: MessageSquareText },
+];
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('tools');
+  const [activeSection, setActiveSection] = useState<SectionId>('models');
+  const meta = sectionMeta(activeSection);
+  const [compactLayout, setCompactLayout] = useState(false);
 
-  const tabs: { id: TabId; label: string; icon: string }[] = [
-    { id: 'tools', label: '工具中心', icon: '🛠' },
-    { id: 'providers', label: '模型中心', icon: '🧠' },
-    { id: 'chat', label: 'AI 助手', icon: '💬' },
-  ];
-
-  return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100">
-      <header className="bg-white/80 backdrop-blur border-b border-slate-200 px-6 py-3 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-bold shadow-sm">A</div>
-          <div>
-            <h1 className="text-base font-semibold text-slate-900">AI Toolkit Hub</h1>
-            <p className="text-[10px] text-slate-400 leading-none mt-0.5">多工具 AI 模型管理中心</p>
-          </div>
-        </div>
-        <span className="text-[10px] px-2 py-1 bg-slate-100 text-slate-500 rounded-full font-medium">v2.0</span>
-      </header>
-
-      <div className="bg-white/50 backdrop-blur border-b border-slate-200 px-6 shrink-0">
-        <nav className="flex gap-1 -mb-px">
-          {tabs.map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-all ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-              }`}>
-              <span className="text-base">{tab.icon}</span>
-              <span>{tab.label}</span>
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      <main className="flex-1 p-6 overflow-auto">
-        <div className="max-w-5xl mx-auto">
-          {activeTab === 'tools' && <ToolHubPanel />}
-          {activeTab === 'providers' && <ProviderModelPanel />}
-          {activeTab === 'chat' && <AIChatPanel />}
-        </div>
-      </main>
-    </div>
-  );
-}
-
-// ===== 工具中心 =====
-function ToolHubPanel() {
-  const [detection, setDetection] = useState<DetectionResult[]>([]);
-  const [tools, setTools] = useState<Tool[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [bindTarget, setBindTarget] = useState<Tool | null>(null);
-  const [providerCount, setProviderCount] = useState(0);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [d, t, p] = await Promise.all([api.detectInstalledTools(), api.listTools(), api.listProviders()]);
-      setDetection(d); setTools(t); setProviderCount(p.length);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+  useEffect(() => {
+    const updateLayout = () => setCompactLayout(window.innerWidth < 1600);
+    updateLayout();
+    window.addEventListener('resize', updateLayout);
+    return () => window.removeEventListener('resize', updateLayout);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
-
-  if (loading) return <LoadingState />;
-
-  const installed = tools.filter(t => detection.find(d => d.tool_id === t.id)?.installed);
-  const notInstalled = tools.filter(t => !detection.find(d => d.tool_id === t.id)?.installed);
-
   return (
-    <div className="space-y-6">
-      {/* 首次使用引导 */}
-      {providerCount === 0 && (
-        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-5">
-          <div className="flex items-start gap-3">
-            <span className="text-xl">👋</span>
+    <div className="min-h-screen bg-[#f6f1e8] text-slate-900">
+      <div className={`grid min-h-screen ${compactLayout ? 'grid-cols-[220px_minmax(0,1fr)]' : 'grid-cols-[280px_minmax(0,1fr)]'}`}>
+        <aside className={`border-r border-[#e7ddd0] bg-[#f7f1e7] ${compactLayout ? 'px-6 py-6' : 'px-10 py-8'}`}>
+          <div className="mb-10 flex items-center gap-4">
+            <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-[#ff8b4d] to-[#d8642f] text-white shadow-[0_18px_35px_rgba(216,100,47,0.22)]">
+              <Sparkles className="h-7 w-7" />
+            </div>
             <div>
-              <p className="text-sm font-semibold text-blue-800">欢迎使用 AI Toolkit Hub！</p>
-              <p className="text-xs text-blue-600 mt-1">
-                请先在 <strong>模型中心</strong> 添加厂商和模型，然后回到这里为工具绑定模型。
-              </p>
+              <div className="flex items-end gap-3">
+                <h1 className={`${compactLayout ? 'text-3xl' : 'text-4xl'} font-black tracking-tight text-[#2f241c]`}>观景</h1>
+                <span className="pb-1 text-sm tracking-[0.35em] text-[#cc6a43]">VISTA</span>
+              </div>
+              <p className="mt-1 text-sm text-[#8f7c6a]">中文模型与工具编排控制台</p>
             </div>
           </div>
-        </div>
-      )}
 
-      {/* 统计卡片 */}
-      {installed.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
-          <StatCard icon="🔍" label="检测工具" value={`${tools.length} 个`} color="blue" />
-          <StatCard icon="✅" label="已安装" value={`${installed.length} 个`} color="green" />
-          <StatCard icon="📦" label="待安装" value={`${notInstalled.length} 个`} color="amber" />
-        </div>
-      )}
-
-      {/* 已安装工具 */}
-      {installed.length > 0 && (
-        <Section title="已安装工具" count={installed.length} icon="✅">
-          <div className="grid gap-3">
-            {installed.map(t => {
-              const det = detection.find(d => d.tool_id === t.id)!;
-              return <ToolCard key={t.id} tool={t} det={det} installed onBind={() => setBindTarget(t)} />;
-            })}
-          </div>
-        </Section>
-      )}
-
-      {/* 未安装工具 */}
-      <Section title="未安装" count={notInstalled.length} icon="📦" muted={installed.length > 0}>
-        {notInstalled.length === 0 ? <EmptyState text="全部已安装 🎉" /> : (
-          <div className="grid gap-2">
-            {notInstalled.map(t => (
-              <ToolCard key={t.id} tool={t} installed={false} />
-            ))}
-          </div>
-        )}
-      </Section>
-
-      {/* 绑定弹窗 */}
-      {bindTarget && (
-        <BindDialog tool={bindTarget} onClose={() => setBindTarget(null)} onDone={() => { setBindTarget(null); load(); }} />
-      )}
-    </div>
-  );
-}
-
-// ===== 绑定弹窗（纯选择，无 Key 输入） =====
-function BindDialog({ tool, onClose, onDone }: { tool: Tool; onClose: () => void; onDone: () => void }) {
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
-  const [selProvider, setSelProvider] = useState('');
-  const [selModel, setSelModel] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => {
-      setProviders(p); setModels(m);
-      if (p.length > 0) {
-        setSelProvider(p[0].id);
-        const avail = m.filter(x => x.provider_id === p[0].id);
-        if (avail.length > 0) setSelModel(avail[0].id);
-      }
-    });
-  }, []);
-
-  const onProviderChange = (pid: string) => {
-    setSelProvider(pid);
-    const avail = models.filter(m => m.provider_id === pid);
-    if (avail.length > 0) setSelModel(avail[0].id);
-  };
-
-  const handleSave = async () => {
-    if (!selProvider || !selModel) return;
-    setSaving(true);
-    try {
-      await api.applyBinding(tool.id, selProvider, selModel);
-      onDone();
-    } catch (e) { alert('绑定失败: ' + e); }
-    finally { setSaving(false); }
-  };
-
-  const availModels = models.filter(m => m.provider_id === selProvider);
-
-  return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-slate-800 mb-1">为 {tool.name} 选择模型</h3>
-        <p className="text-xs text-slate-400 mb-5">从模型中心已配置好的方案中选择。</p>
-        <div className="space-y-4">
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">厂商</label>
-            <select value={selProvider} onChange={e => onProviderChange(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="">选择厂商...</option>
-              {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500 mb-1 block">模型</label>
-            <select value={selModel} onChange={e => setSelModel(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" disabled={!selProvider}>
-              <option value="">选择模型...</option>
-              {availModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 mt-6">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
-          <button onClick={handleSave} disabled={saving || !selProvider || !selModel}
-            className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300 transition-colors">
-            {saving ? '绑定中...' : '确认绑定'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ===== 工具卡片 =====
-function ToolCard({ tool, det, installed, onBind }: {
-  tool: Tool; det?: DetectionResult; installed?: boolean; onBind?: () => void;
-}) {
-  const [binding, setBinding] = useState<{ id: string; provider_name: string | null; model_name: string | null; } | null>(null);
-  const [result, setResult] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (installed) {
-      api.getToolBinding(tool.id).then(b => {
-        if (b) setBinding({ id: b.id, provider_name: b.provider_name, model_name: b.model_name });
-      }).catch(() => {});
-    }
-  }, [tool.id, installed]);
-
-  const handleLaunch = async () => {
-    try { const pid = await api.launchTool(tool.id); setResult(`✅ 已启动 (PID: ${pid})`); setTimeout(() => setResult(null), 3000); }
-    catch (e) { setResult('❌ ' + e); }
-  };
-
-  const handleUnbind = async () => {
-    if (!binding || !confirm('确定解绑此工具的模型？')) return;
-    try { await api.unbindTool(binding.id); setBinding(null); setResult('✅ 已解绑'); setTimeout(() => setResult(null), 2000); }
-    catch (e) { setResult('❌ 解绑失败'); }
-  };
-
-  const handleInstall = async () => {
-    setResult(null);
-    try { const msg = await api.installTool(tool.id); setResult('✅ ' + msg); }
-    catch (e) { setResult('❌ ' + e); }
-  };
-
-  return (
-    <div className={`rounded-xl border transition-all ${
-      installed
-        ? 'bg-white border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300'
-        : 'bg-white/70 border-slate-200 hover:border-slate-300'
-    }`}>
-      <div className="p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${installed ? 'bg-emerald-500 shadow-sm shadow-emerald-200' : 'bg-slate-300'}`} />
-          <div className="min-w-0">
-            <div className="font-medium text-sm text-slate-800">{tool.name}</div>
-            <div className="text-xs text-slate-400 mt-0.5">
-              {installed && det ? (
-                <>{det.install_type === 'cli' ? '💻 命令行工具' : det.install_type === 'desktop' ? '🖥 桌面应用' : '💻+🖥'}
-                {det.versions[0] && ` · ${det.versions[0].replace('cli:', '')}`}</>
-              ) : (
-                <>{tool.category === 'cli' ? '💻 命令行' : tool.category === 'agent' ? '🤖 AI Agent' : '🖥 桌面端'}</>
-              )}
-              {binding && <span className="ml-2 text-blue-500 font-medium">🔗 {binding.provider_name}/{binding.model_name}</span>}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {installed ? (
-            <>
-              {binding ? (
-                <ActionButton onClick={handleUnbind} label="解绑" color="red" />
-              ) : (
-                <ActionButton onClick={onBind!} label="绑定模型" color="blue" />
-              )}
-              <ActionButton onClick={handleLaunch} label="启动" color="emerald" />
-            </>
-          ) : (
-            <ActionButton onClick={handleInstall} label="一键安装" color="blue" />
-          )}
-        </div>
-      </div>
-      {result && (
-        <div className={`px-4 pb-3 text-xs ${result.startsWith('✅') ? 'text-emerald-600' : 'text-red-500'} whitespace-pre-wrap break-words`}>
-          {result}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ===== 模型中心 =====
-function ProviderModelPanel() {
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
-  const [showAdd, setShowAdd] = useState(false);
-  const [showAddModel, setShowAddModel] = useState(false);
-  const [editProvider, setEditProvider] = useState<Provider | null>(null);
-  const [newProvider, setNewProvider] = useState({ id: '', name: '', api_base: '', anthropic_mode: true, api_key: '' });
-
-  const load = useCallback(() => {
-    Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => { setProviders(p); setModels(m); }).catch(console.error);
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const handleAddProvider = async () => {
-    if (!newProvider.id || !newProvider.name || !newProvider.api_base) return;
-    try {
-      await api.createProvider({ ...newProvider, api_key: newProvider.api_key || undefined });
-      setShowAdd(false); setNewProvider({ id: '', name: '', api_base: '', anthropic_mode: true, api_key: '' }); load();
-    } catch (e) { alert('添加失败: ' + e); }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-slate-800">模型配置</h2>
-        <button onClick={() => setShowAddModel(true)}
-          className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors mr-2">
-          + 添加模型
-        </button>
-        <button onClick={() => setShowAdd(true)}
-          className="flex items-center gap-1.5 px-4 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 transition-colors shadow-sm">
-          + 添加厂商
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-6">
-        <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">厂商 · {providers.length}</h3>
-          {providers.length === 0 ? <EmptyState text="暂无厂商，点击上方添加" /> : (
-            <div className="space-y-2">
-              {providers.map(p => (
-                <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-                  <div className="flex items-start justify-between">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-sm text-slate-800">{p.name}</div>
-                      <div className="text-[11px] text-slate-400 mt-1 font-mono break-all">{p.api_base}</div>
-                    </div>
-                    <div className="flex gap-1 shrink-0 ml-2">
-                      <button onClick={() => setEditProvider(p)}
-                        className="text-slate-300 hover:text-blue-400 transition-colors text-xs px-1.5 py-0.5 rounded hover:bg-blue-50">✎</button>
-                      <button onClick={async () => { if (confirm('确定删除此厂商？')) { try { await api.deleteProvider(p.id); load(); } catch (e) { alert('删除失败'); } } }}
-                        className="text-slate-300 hover:text-red-400 transition-colors text-xs px-1.5 py-0.5 rounded hover:bg-red-50">✕</button>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 mt-3">
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${p.anthropic_mode ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
-                      {p.anthropic_mode ? 'Anthropic 兼容' : 'OpenAI 格式'}
-                    </span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium">
-                      {models.filter(m => m.provider_id === p.id).length} 个模型
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">模型 · {models.length}</h3>
-          <div className="space-y-2 max-h-[600px] overflow-y-auto">
-            {providers.map(p => {
-              const pModels = models.filter(m => m.provider_id === p.id);
-              if (pModels.length === 0) return null;
+          <nav className="space-y-2">
+            {sidebarItems.map(item => {
+              const Icon = item.icon;
+              const active = item.id === activeSection;
               return (
-                <div key={p.id}>
-                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 mt-3 first:mt-0">{p.name}</div>
-                  {pModels.map(m => (
-                    <div key={m.id} className="bg-white rounded-lg border border-slate-200 p-3 mb-1.5 hover:border-slate-300 transition-colors">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-sm text-slate-800">{m.name}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">{(m.context_length / 1000).toFixed(0)}K ctx</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {m.supports_reasoning && <Badge color="purple">推理</Badge>}
-                        {m.supports_tool_call && <Badge color="blue">工具调用</Badge>}
-                        {m.supports_vision && <Badge color="emerald">视觉</Badge>}
-                        {m.supports_attachment && <Badge color="amber">附件</Badge>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <button
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id)}
+                  className={`flex w-full items-center gap-4 rounded-2xl px-5 py-4 text-left transition-all ${
+                    active
+                      ? 'bg-[#ddd3c6] text-[#2f241c] shadow-[0_12px_30px_rgba(80,60,40,0.08)]'
+                      : 'text-[#5f554d] hover:bg-[#ede5da]'
+                  }`}
+                >
+                  <Icon className="h-6 w-6" />
+                  <span className={`${compactLayout ? 'text-lg' : 'text-xl'} font-semibold`}>{item.label}</span>
+                </button>
               );
             })}
-            {models.length === 0 && <EmptyState text="暂未添加模型" />}
-          </div>
-        </div>
-      </div>
+          </nav>
 
-      {/* 添加厂商弹窗 */}
-      {showAdd && (
-        <Modal title="添加厂商" onClose={() => setShowAdd(false)}>
-          <div className="space-y-4">
-            <Field label="厂商 ID" value={newProvider.id} onChange={v => setNewProvider(p => ({ ...p, id: v }))} placeholder="例: deepseek" />
-            <Field label="名称" value={newProvider.name} onChange={v => setNewProvider(p => ({ ...p, name: v }))} placeholder="例: DeepSeek" />
-            <Field label="API Base URL" value={newProvider.api_base} onChange={v => setNewProvider(p => ({ ...p, api_base: v }))} placeholder="https://api.deepseek.com/anthropic" />
-            <div>
-              <label className="text-xs font-medium text-slate-500 mb-1 block">API Key（选填，保存后绑定工具时自动使用）</label>
-              <input type="password" value={newProvider.api_key} onChange={e => setNewProvider(p => ({ ...p, api_key: e.target.value }))}
-                placeholder="sk-..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <div className="mt-auto pt-12 text-sm text-[#8f7c6a]">
+            <div className="rounded-2xl border border-[#eadfce] bg-[#fbf7f0] px-5 py-4">
+              <div className="font-semibold text-[#5a4b3d]">本地大模型</div>
+              <div className="mt-1 text-[#9e8d7d]">离线</div>
             </div>
-            <label className="flex items-center gap-2 text-sm text-slate-600">
-              <input type="checkbox" checked={newProvider.anthropic_mode} onChange={e => setNewProvider(p => ({ ...p, anthropic_mode: e.target.checked }))} className="rounded border-slate-300" />
-              Anthropic 兼容模式
-            </label>
           </div>
-          <div className="flex justify-end gap-2 mt-6">
-            <button onClick={() => setShowAdd(false)} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
-            <button onClick={handleAddProvider} className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600">添加</button>
-          </div>
-        </Modal>
-      )}
+        </aside>
 
-      {/* 添加模型弹窗 */}
-      {showAddModel && <AddModelDialog onClose={() => setShowAddModel(false)} onDone={() => { setShowAddModel(false); load(); }} providers={providers} />}
-      {editProvider && <EditProviderDialog provider={editProvider} onClose={() => setEditProvider(null)} onDone={() => { setEditProvider(null); load(); }} />}
+        <main className={`${compactLayout ? 'px-6 py-6' : 'px-10 py-8'}`}>
+          <header className="mb-8 flex items-start justify-between">
+            <div>
+              <div className="flex items-end gap-4">
+                <h2 className={`${compactLayout ? 'text-4xl' : 'text-5xl'} font-black tracking-tight text-[#2d241b]`}>{meta.title}</h2>
+                <span className="pb-2 text-sm font-semibold tracking-[0.35em] text-[#c96f46]">{meta.accent}</span>
+              </div>
+              <p className="mt-3 text-base text-[#8c7a69]">{meta.subtitle}</p>
+            </div>
+            <div className="rounded-full bg-[#efe7db] px-4 py-2 text-sm font-semibold text-[#786a5d]">中文界面</div>
+          </header>
+
+          {activeSection === 'models' && <ModelCenterPage />}
+          {activeSection === 'apps' && <ApplicationStudioPage />}
+          {activeSection === 'local-models' && <PlaceholderPanel title="本地大模型" body="这里下一步可以继续接 Ollama、LM Studio、vLLM 等本地推理服务。" />}
+          {activeSection === 'repair' && <PlaceholderPanel title="安装与修复" body="这里适合集中处理缺失环境、诊断日志、重新检测与一键修复。" />}
+          {activeSection === 'news' && <PlaceholderPanel title="AI 资讯" body="这里预留给资讯、公告与版本更新提醒。" />}
+          {activeSection === 'featured' && <PlaceholderPanel title="明星项目" body="这里预留给推荐项目、模板工作流和热门组合。" />}
+          {activeSection === 'courses' && <PlaceholderPanel title="AI 公开课" body="这里预留给教程、接入说明和上手指南。" />}
+          {activeSection === 'feedback' && <PlaceholderPanel title="问题反馈" body="这里预留给日志导出、错误反馈和工单入口。" />}
+        </main>
+      </div>
     </div>
   );
 }
 
-// ===== 添加模型弹窗 =====
-function AddModelDialog({ onClose, onDone, providers }: { onClose: () => void; onDone: () => void; providers: Provider[] }) {
-  const [providerId, setProviderId] = useState(providers[0]?.id || '');
-  const [name, setName] = useState('');
-  const [modelId, setModelId] = useState('');
-  const [ctxLen, setCtxLen] = useState('128000');
-  const [maxOut, setMaxOut] = useState('8192');
-  const [saving, setSaving] = useState(false);
+function ModelCenterPage() {
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [models, setModels] = useState<Model[]>([]);
+  const [presets, setPresets] = useState<VendorPreset[]>([]);
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [showAddModel, setShowAddModel] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [editingModel, setEditingModel] = useState<Model | null>(null);
 
-  const handleSave = async () => {
-    if (!providerId || !name || !modelId) return;
+  const load = useCallback(() => {
+    Promise.all([api.listProviders(), api.listModels(), api.listPresets()])
+      .then(([providerList, modelList, presetList]) => {
+        setProviders(providerList);
+        setModels(modelList);
+        setPresets(presetList);
+      })
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const duplicateNames = duplicateProviderNames(providers);
+  const providerMap = useMemo(
+    () => new Map(providers.map(provider => [provider.id, provider])),
+    [providers]
+  );
+
+  const modelCards = useMemo(
+    () =>
+      models
+        .map(model => ({ model, provider: providerMap.get(model.provider_id) }))
+        .filter((item): item is { model: Model; provider: Provider } => Boolean(item.provider)),
+    [models, providerMap]
+  );
+
+  const readyProviderCount = providers.filter(provider => provider.has_api_key).length;
+  const anthropicReadyCount = providers.filter(provider => provider.anthropic_mode).length;
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-6">
+        <div className="flex flex-wrap items-center gap-4">
+          <button className="rounded-xl border border-[#e3d7c8] bg-[#fbf7ef] px-6 py-3 text-xl font-semibold text-[#5b4d41] transition hover:bg-white">
+            测试速度
+          </button>
+          <button className="rounded-xl bg-[#d8cfbf] px-6 py-3 text-xl font-semibold text-[#3a3128]">
+            大模型厂商
+          </button>
+          <button className="rounded-xl px-6 py-3 text-xl font-semibold text-[#6d6257] transition hover:bg-[#efe6da]">
+            模型中转站
+          </button>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <SummaryCard title="已接入厂商" value={`${providers.length}`} detail={`${readyProviderCount} 个已保存 Key`} />
+          <SummaryCard title="模型条目" value={`${models.length}`} detail="用于桌面端、Agents 与 CLI 绑定" />
+          <SummaryCard title="Anthropic 兼容" value={`${anthropicReadyCount}`} detail="适合 Claude / MiniMax 一类工具" />
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {modelCards.map(({ model, provider }) => (
+            <article
+              key={model.id}
+              className={`rounded-[28px] border bg-gradient-to-br p-6 shadow-[0_18px_40px_rgba(92,70,44,0.08)] ${providerTone(provider)}`}
+            >
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm tracking-[0.25em] text-[#9b8a78]">云端</div>
+                  <h3 className="mt-3 text-2xl font-black text-[#2f241c]">{providerDisplayName(provider, duplicateNames)}</h3>
+                </div>
+                <div className="space-x-2 text-sm text-[#9d8f81]">
+                  <button onClick={() => setEditingModel(model)} className="hover:text-[#6e5949]">编辑模型</button>
+                  <button onClick={() => setEditingProvider(provider)} className="hover:text-[#6e5949]">编辑</button>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`确定删除厂商“${provider.name}”吗？`)) return;
+                      await api.deleteProvider(provider.id);
+                      load();
+                    }}
+                    className="hover:text-[#c35c44]"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3 text-[#6f6256]">
+                <div>模型：<span className="font-semibold text-[#53483d]">{model.model_id}</span></div>
+                <div>来源：<span className="font-mono text-[#53483d]">{provider.api_base.replace(/^https?:\/\//, '')}</span></div>
+                <div>上下文：<span className="font-semibold text-[#53483d]">{formatContextLength(model.context_length)}</span></div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap gap-2">
+                <Tag tone={provider.has_api_key ? 'green' : 'rose'}>{formatModelStatus(provider, model)}</Tag>
+                <Tag tone="slate">{provider.anthropic_mode ? 'Anthropic' : 'OpenAI'}</Tag>
+                {model.supports_reasoning && <Tag tone="amber">推理</Tag>}
+                {model.supports_tool_call && <Tag tone="blue">工具调用</Tag>}
+                {provider.has_api_key ? <Tag tone="green">已保存 Key</Tag> : <Tag tone="rose">缺少 Key</Tag>}
+              </div>
+              <div className="mt-5 flex justify-end">
+                <button
+                  onClick={async () => {
+                    if (!confirm(`确定删除模型“${model.name}”吗？`)) return;
+                    await api.deleteModel(model.id);
+                    load();
+                  }}
+                  className="text-sm font-semibold text-[#c35c44] hover:text-[#a94a34]"
+                >
+                  删除模型
+                </button>
+              </div>
+            </article>
+          ))}
+
+          <button
+            onClick={() => setShowAddModel(true)}
+            className="grid min-h-[270px] place-items-center rounded-[28px] border border-dashed border-[#d9cdbd] bg-[#fbf8f1] text-center transition hover:bg-white"
+          >
+            <div>
+              <div className="text-4xl font-black text-[#43382e]">添加模型</div>
+              <div className="mt-3 text-2xl text-[#9d8f81]">OpenAI / Anthropic API</div>
+            </div>
+          </button>
+        </div>
+      </section>
+      <section className="rounded-[28px] border border-[#e3d7c8] bg-[#fbf7ef] p-5 shadow-[0_18px_40px_rgba(92,70,44,0.08)]">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-2xl font-black text-[#31261d]">厂商列表</h3>
+          <button
+            onClick={() => setShowAddProvider(true)}
+            className="rounded-xl bg-[#d2cabd] px-4 py-2 text-lg font-semibold text-[#3a3027] transition hover:bg-[#c7bdaf]"
+          >
+            新增厂商
+          </button>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {providers.map(provider => (
+            <div key={provider.id} className="rounded-2xl border border-[#eadfce] bg-white px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xl font-bold text-[#2f241c]">{providerDisplayName(provider, duplicateNames)}</div>
+                  <div className="mt-1 text-sm text-[#9a8a79]">{provider.api_base.replace(/^https?:\/\//, '')}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setEditingProvider(provider)} className="text-sm font-semibold text-[#6e5949] hover:text-[#3f3329]">编辑</button>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`确定删除厂商“${provider.name}”吗？`)) return;
+                      await api.deleteProvider(provider.id);
+                      load();
+                    }}
+                    className="text-sm font-semibold text-[#c35c44] hover:text-[#a94a34]"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Tag tone="slate">{provider.anthropic_mode ? 'Anthropic 兼容' : 'OpenAI 格式'}</Tag>
+                <Tag tone={provider.has_api_key ? 'green' : 'rose'}>{provider.has_api_key ? '已保存 Key' : '缺少 Key'}</Tag>
+                <Tag tone="amber">{models.filter(model => model.provider_id === provider.id).length} 个模型</Tag>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {showAddProvider && (
+        <ProviderEditorModal
+          presets={presets}
+          onClose={() => setShowAddProvider(false)}
+          onSaved={() => {
+            setShowAddProvider(false);
+            load();
+          }}
+        />
+      )}
+      {editingProvider && (
+        <ProviderEditorModal
+          presets={presets}
+          provider={editingProvider}
+          onClose={() => setEditingProvider(null)}
+          onSaved={() => {
+            setEditingProvider(null);
+            load();
+          }}
+        />
+      )}
+      {showAddModel && (
+        <ModelEditorModal
+          providers={providers}
+          onClose={() => setShowAddModel(false)}
+          onSaved={() => {
+            setShowAddModel(false);
+            load();
+          }}
+        />
+      )}
+      {editingModel && (
+        <ModelEditorModal
+          providers={providers}
+          model={editingModel}
+          onClose={() => setEditingModel(null)}
+          onSaved={() => {
+            setEditingModel(null);
+            load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ApplicationStudioPage() {
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [models, setModels] = useState<Model[]>([]);
+  const [tools, setTools] = useState<Tool[]>([]);
+  const [detection, setDetection] = useState<DetectionResult[]>([]);
+  const [category, setCategory] = useState<AppCategory>('all');
+  const [selectedToolId, setSelectedToolId] = useState<string>('');
+  const [selectedProviderId, setSelectedProviderId] = useState<string>('');
+  const [selectedModelId, setSelectedModelId] = useState<string>('');
+  const [binding, setBinding] = useState<{ provider_name: string | null; model_name: string | null } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string>('');
+
+  const load = useCallback(async () => {
+    const [providerList, modelList, toolList, detectionList] = await Promise.all([
+      api.listProviders(),
+      api.listModels(),
+      api.listTools(),
+      api.detectInstalledTools(),
+    ]);
+    setProviders(providerList);
+    setModels(modelList);
+    setTools(toolList);
+    setDetection(detectionList);
+    if (!selectedToolId) {
+      const installed = toolList.find(tool => detectionList.find(item => item.tool_id === tool.id)?.installed);
+      setSelectedToolId(installed?.id ?? toolList[0]?.id ?? '');
+    }
+  }, [selectedToolId]);
+
+  useEffect(() => {
+    load().catch(console.error);
+  }, [load]);
+
+  useEffect(() => {
+    if (!selectedToolId) return;
+    api.getToolBinding(selectedToolId).then(result => {
+      setBinding(result ? { provider_name: result.provider_name, model_name: result.model_name } : null);
+      if (result) {
+        setSelectedProviderId(result.provider_id);
+        setSelectedModelId(result.model_id);
+      }
+    }).catch(() => setBinding(null));
+  }, [selectedToolId]);
+
+  const selectedTool = tools.find(tool => tool.id === selectedToolId) ?? null;
+  const selectedDetection = detection.find(item => item.tool_id === selectedToolId);
+  const selectedProvider = providers.find(provider => provider.id === selectedProviderId) ?? null;
+  const selectedMeta = selectedTool ? toolDisplayMeta(selectedTool) : null;
+  const duplicateNames = duplicateProviderNames(providers);
+  const installedCount = detection.filter(item => item.installed).length;
+  const configurableCount = tools.filter(tool => SUPPORTED_BINDING_TOOL_IDS.has(tool.id)).length;
+  const needsInstallCount = Math.max(tools.length - installedCount, 0);
+  const compatibleProviders = useMemo(() => {
+    if (!selectedTool) return providers;
+    if (selectedTool.id === 'aider-cli') {
+      return providers.filter(provider => !provider.anthropic_mode);
+    }
+    return providers;
+  }, [providers, selectedTool]);
+  const providerModels = models.filter(model => model.provider_id === selectedProviderId);
+
+  const categories: Array<{ id: AppCategory; label: string }> = [
+    { id: 'all', label: '全部' },
+    { id: 'desktop', label: '桌面端' },
+    { id: 'agents', label: 'Agents' },
+    { id: 'ide', label: 'IDE' },
+    { id: 'cli', label: 'CLI Code' },
+    { id: 'tools', label: '工具' },
+  ];
+
+  const visibleTools = tools.filter(tool => {
+    const meta = toolDisplayMeta(tool);
+    return category === 'all' || meta.category === category;
+  });
+  const installedTools = visibleTools.filter(tool => detection.find(item => item.tool_id === tool.id)?.installed);
+  const availableTools = visibleTools.filter(tool => !detection.find(item => item.tool_id === tool.id)?.installed);
+
+  useEffect(() => {
+    if (!selectedTool || !selectedProviderId) return;
+    if (selectedTool.id === 'aider-cli') {
+      const provider = providers.find(item => item.id === selectedProviderId);
+      if (provider?.anthropic_mode) {
+        setSelectedProviderId('');
+        setSelectedModelId('');
+      }
+    }
+  }, [providers, selectedProviderId, selectedTool]);
+
+  const applyBinding = async () => {
+    if (!selectedTool || !selectedProviderId || !selectedModelId) return;
     setSaving(true);
+    setNotice('');
     try {
-      await api.createModel({
-        provider_id: providerId, name, model_id: modelId,
-        context_length: parseInt(ctxLen) || 128000,
-        max_output: parseInt(maxOut) || 8192,
-      });
-      onDone();
-    } catch (e) { alert('添加失败: ' + e); }
-    finally { setSaving(false); }
+      await api.applyBinding(selectedTool.id, selectedProviderId, selectedModelId);
+      const selectedProviderName = providers.find(provider => provider.id === selectedProviderId)?.name ?? null;
+      const selectedModelName = models.find(model => model.id === selectedModelId)?.name ?? null;
+      setBinding({ provider_name: selectedProviderName, model_name: selectedModelName });
+      setNotice(`已将 ${selectedMeta?.title ?? selectedTool.name} 绑定到 ${selectedProviderName ?? '-'} / ${selectedModelName ?? '-'}`);
+    } catch (error) {
+      alert(`绑定失败: ${error}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const installSelectedTool = async () => {
+    if (!selectedTool) return;
+    try {
+      const message = await api.installTool(selectedTool.id);
+      alert(message);
+      setNotice(`已触发 ${selectedMeta?.title ?? selectedTool.name} 的安装流程`);
+      await load();
+    } catch (error) {
+      alert(`安装失败: ${error}`);
+    }
   };
 
   return (
-    <Modal title="添加模型" onClose={onClose}>
+    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_420px]">
+      <section>
+        <div className="mb-6 grid gap-4 md:grid-cols-3">
+          <SummaryCard title="已检测工具" value={`${tools.length}`} detail={`${installedCount} 个已安装`} />
+          <SummaryCard title="可自动配置" value={`${configurableCount}`} detail="会优先接入桌面端、Agents 与 CLI" />
+          <SummaryCard title="待安装" value={`${needsInstallCount}`} detail="缺失工具可在这里发起安装" />
+        </div>
+
+        <div className="mb-6 flex flex-wrap items-center gap-5 border-b border-[#e5dacc] pb-4">
+          {categories.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setCategory(item.id)}
+              className={`border-b-4 px-4 pb-4 text-2xl font-semibold transition ${
+                category === item.id
+                  ? 'border-[#d07347] text-[#2f241c]'
+                  : 'border-transparent text-[#6e6258] hover:text-[#3f3329]'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+          <button
+            onClick={() => load().catch(console.error)}
+            className="ml-auto rounded-xl border border-[#e3d7c8] bg-[#fbf7ef] px-5 py-3 text-lg font-semibold text-[#5a4c40] transition hover:bg-white"
+          >
+            刷新
+          </button>
+        </div>
+
+        <div className="space-y-8">
+          <StudioToolSection
+            title={`已安装 · ${installedTools.length}`}
+            subtitle={`当前分类：${appCategoryLabel(category)}`}
+          >
+            {installedTools.map(tool => {
+              const det = detection.find(item => item.tool_id === tool.id);
+              const active = tool.id === selectedToolId;
+              const meta = toolDisplayMeta(tool);
+              return (
+                <StudioToolCard
+                  key={tool.id}
+                  tool={tool}
+                  detection={det}
+                  meta={meta}
+                  active={active}
+                  selectedBindingLabel={binding && active ? binding.model_name ?? '-' : '-'}
+                  onSelect={() => {
+                    setSelectedToolId(tool.id);
+                    setSelectedProviderId('');
+                    setSelectedModelId('');
+                  }}
+                />
+              );
+            })}
+            {installedTools.length === 0 && <StudioEmpty text="这个分类下还没有检测到已安装工具。" />}
+          </StudioToolSection>
+
+          <StudioToolSection
+            title={`可安装 · ${availableTools.length}`}
+            subtitle="这些工具还没有安装，可以作为下一步接入目标。"
+          >
+            {availableTools.map(tool => {
+              const det = detection.find(item => item.tool_id === tool.id);
+              const active = tool.id === selectedToolId;
+              const meta = toolDisplayMeta(tool);
+              return (
+                <StudioToolCard
+                  key={tool.id}
+                  tool={tool}
+                  detection={det}
+                  meta={meta}
+                  active={active}
+                  selectedBindingLabel="-"
+                  onSelect={() => {
+                    setSelectedToolId(tool.id);
+                    setSelectedProviderId('');
+                    setSelectedModelId('');
+                  }}
+                />
+              );
+            })}
+            {availableTools.length === 0 && <StudioEmpty text="这个分类下暂时没有新的可安装工具。" />}
+          </StudioToolSection>
+        </div>
+      </section>
+
+      <aside className="rounded-[32px] border border-[#e3d7c8] bg-[#fbf7ef] p-6 shadow-[0_18px_40px_rgba(92,70,44,0.08)]">
+        {!selectedTool ? (
+          <div className="grid min-h-[600px] place-items-center text-center text-[#8f7d6a]">
+            <div>
+              <PackageSearch className="mx-auto h-14 w-14 text-[#c6b6a4]" />
+              <p className="mt-4 text-2xl font-semibold">选择要配置的工具</p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex h-full flex-col">
+            <div className="mb-6">
+              <div className="text-sm tracking-[0.25em] text-[#9b8a78]">模型</div>
+              <div className="mt-3 flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-3xl font-black text-[#2f241c]">{selectedMeta?.title ?? selectedTool.name}</h3>
+                  <p className="mt-2 text-base text-[#8d7d6d]">
+                    当前绑定：{binding ? `${binding.provider_name ?? '-'} / ${binding.model_name ?? '-'}` : '尚未绑定'}
+                  </p>
+                </div>
+                <div className={`rounded-full px-4 py-2 text-sm font-semibold ${selectedDetection?.installed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {toolStatus(selectedDetection)}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Tag tone="slate">{selectedMeta ? appCategoryLabel(selectedMeta.category) : '工具'}</Tag>
+                <Tag tone={SUPPORTED_BINDING_TOOL_IDS.has(selectedTool.id) ? 'green' : 'amber'}>
+                  {SUPPORTED_BINDING_TOOL_IDS.has(selectedTool.id) ? '已接入自动配置' : '待接入自动配置'}
+                </Tag>
+              </div>
+              {notice && (
+                <div className="mt-4 rounded-[20px] border border-[#e5d8cb] bg-white px-4 py-3 text-base text-[#6d5a4b]">
+                  {notice}
+                </div>
+              )}
+            </div>
+
+            {!SUPPORTED_BINDING_TOOL_IDS.has(selectedTool.id) ? (
+              <div className="mt-10 rounded-3xl border border-[#e8d9c5] bg-white p-6 text-[#77695c]">
+                <p className="text-xl font-semibold text-[#3a3028]">这个工具还没有接入自动配置。</p>
+                <p className="mt-3 text-base">这次重构先把产品结构理顺，后续我们可以按工具逐个补适配。</p>
+                {!selectedDetection?.installed && (
+                  <button
+                    onClick={installSelectedTool}
+                    className="mt-6 rounded-2xl bg-[#d07347] px-6 py-3 text-lg font-semibold text-white transition hover:bg-[#c26438]"
+                  >
+                    AI 自动安装
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="text-lg font-semibold text-[#5a4c40]">可选厂商</div>
+                  <div className="flex items-center gap-3 text-sm text-[#8d7d6d]">
+                    <span>上游直连</span>
+                    <span className="h-8 w-14 rounded-full bg-[#ebe1d2]" />
+                  </div>
+                </div>
+                <div className="space-y-4 overflow-y-auto">
+                  {compatibleProviders.map(provider => {
+                    const active = provider.id === selectedProviderId;
+                    return (
+                      <button
+                        key={provider.id}
+                        onClick={() => {
+                          setSelectedProviderId(provider.id);
+                          const firstModel = models.find(model => model.provider_id === provider.id);
+                          setSelectedModelId(firstModel?.id ?? '');
+                        }}
+                        className={`flex w-full items-start gap-4 rounded-[24px] border px-5 py-5 text-left transition ${
+                          active
+                            ? 'border-[#d07347] bg-white'
+                            : 'border-[#eadfce] bg-white/70 hover:bg-white'
+                        }`}
+                      >
+                        <div className={`mt-2 h-5 w-5 rounded-full border ${active ? 'border-[#d07347] bg-[#d07347]' : 'border-[#d5c6b2]'}`} />
+                        <div className="min-w-0">
+                          <div className="text-2xl font-bold text-[#2f241c]">{providerDisplayName(provider, duplicateNames)}</div>
+                          <div className="mt-2 text-base text-[#8d7d6d]">{provider.api_base.replace(/^https?:\/\//, '')}</div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Tag tone="slate">{provider.anthropic_mode ? 'Anthropic' : 'OpenAI'}</Tag>
+                            <Tag tone={provider.has_api_key ? 'green' : 'rose'}>{provider.has_api_key ? '已保存 Key' : '缺少 Key'}</Tag>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-6 rounded-[24px] border border-[#eadfce] bg-white p-5">
+                  <div className="text-lg font-semibold text-[#5a4c40]">选择模型</div>
+                  {selectedTool.id === 'aider-cli' && (
+                    <p className="mt-2 text-sm text-[#9d8f81]">Aider 当前只支持 OpenAI 兼容厂商，因此这里会自动过滤 Anthropic 兼容源。</p>
+                  )}
+                  <select
+                    value={selectedModelId}
+                    onChange={event => setSelectedModelId(event.target.value)}
+                    className="mt-4 w-full rounded-2xl border border-[#dfd2c1] bg-[#fcfaf6] px-4 py-4 text-lg outline-none focus:border-[#d07347]"
+                  >
+                    <option value="">请选择模型</option>
+                    {providerModels.map(model => (
+                      <option key={model.id} value={model.id}>{model.name}</option>
+                    ))}
+                  </select>
+                  {selectedProvider && !selectedProvider.has_api_key && (
+                    <p className="mt-4 text-base text-[#c15f44]">当前厂商还没有保存 API Key，请先去模型中心编辑厂商。</p>
+                  )}
+                  {selectedTool.config_path && (
+                    <p className="mt-4 text-sm text-[#9d8f81]">配置将写入：{selectedTool.config_path}</p>
+                  )}
+                </div>
+
+                <div className="mt-auto grid gap-4 pt-8">
+                  <div className="rounded-[24px] border border-[#eadfce] bg-white px-5 py-4 text-[#7a6c5f]">
+                    <div className="text-sm tracking-[0.2em] text-[#a18f7d]">当前策略</div>
+                    <div className="mt-2 text-lg">
+                      {selectedProvider
+                        ? `${providerDisplayName(selectedProvider, duplicateNames)} / ${models.find(model => model.id === selectedModelId)?.name ?? '未选择模型'}`
+                        : '请先选择厂商与模型'}
+                    </div>
+                  </div>
+                  {!selectedDetection?.installed ? (
+                    <button
+                      onClick={installSelectedTool}
+                      className="rounded-3xl bg-[#d07347] px-8 py-5 text-2xl font-bold text-white transition hover:bg-[#c26438]"
+                    >
+                      AI 自动安装
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={applyBinding}
+                        disabled={saving || !selectedProvider || !selectedModelId || !selectedProvider.has_api_key}
+                        className="rounded-3xl bg-[#d07347] px-8 py-5 text-2xl font-bold text-white transition hover:bg-[#c26438] disabled:cursor-not-allowed disabled:bg-[#e5d0c3]"
+                      >
+                        {saving ? '保存配置中...' : '保存模型配置'}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api.launchTool(selectedTool.id);
+                          } catch (error) {
+                            alert(`启动失败: ${error}`);
+                          }
+                        }}
+                        className="rounded-3xl border border-[#d9cdbd] bg-white px-8 py-4 text-xl font-semibold text-[#57483c] transition hover:bg-[#f7f2ea]"
+                      >
+                        启动应用
+                      </button>
+                    </>
+                  )}
+                  <div className="grid grid-cols-2 gap-3 text-sm text-[#8d7d6d]">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" defaultChecked />
+                      直接启动应用
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" defaultChecked />
+                      修改模型配置
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ProviderEditorModal({
+  presets,
+  provider,
+  onClose,
+  onSaved,
+}: {
+  presets: VendorPreset[];
+  provider?: Provider;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [selectedPresetId, setSelectedPresetId] = useState<string>(provider ? CUSTOM_PROVIDER_PRESET : CUSTOM_PROVIDER_PRESET);
+  const [form, setForm] = useState({
+    id: provider?.id ?? '',
+    name: provider?.name ?? '',
+    api_base: provider?.api_base ?? '',
+    anthropic_mode: provider?.anthropic_mode ?? true,
+    api_key: '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const applyPreset = (presetId: string) => {
+    setSelectedPresetId(presetId);
+    if (presetId === CUSTOM_PROVIDER_PRESET) return;
+    const preset = presets.find(item => item.id === presetId);
+    if (!preset) return;
+    setForm(current => ({
+      ...current,
+      id: preset.id,
+      name: preset.name,
+      api_base: preset.api_base,
+      anthropic_mode: ANTHROPIC_PRESET_IDS.has(preset.id) || preset.api_base.includes('/anthropic'),
+    }));
+  };
+
+  const save = async () => {
+    const generatedId = form.id.trim() || slugifyProviderId(form.name);
+    if (!generatedId || !form.name.trim() || !form.api_base.trim()) return;
+    setSaving(true);
+    try {
+      if (provider) {
+        await api.updateProvider({
+          id: provider.id,
+          name: form.name.trim(),
+          api_base: form.api_base.trim(),
+          anthropic_mode: form.anthropic_mode,
+          api_key: form.api_key || undefined,
+        });
+      } else {
+        await api.createProvider({
+          id: generatedId,
+          name: form.name.trim(),
+          api_base: form.api_base.trim(),
+          anthropic_mode: form.anthropic_mode,
+          api_key: form.api_key || undefined,
+        });
+      }
+      onSaved();
+    } catch (error) {
+      alert(`保存失败: ${error}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={provider ? '编辑厂商' : '添加厂商'} onClose={onClose}>
+      <div className="space-y-4">
+        {!provider && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">使用预设</label>
+            <select
+              value={selectedPresetId}
+              onChange={event => applyPreset(event.target.value)}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#d07347]"
+            >
+              <option value={CUSTOM_PROVIDER_PRESET}>自定义厂商</option>
+              {presets.map(preset => (
+                <option key={preset.id} value={preset.id}>{preset.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <Field label="厂商标识" value={form.id} onChange={value => setForm(current => ({ ...current, id: slugifyProviderId(value) }))} placeholder="留空时按名称自动生成" />
+        <Field label="名称" value={form.name} onChange={value => setForm(current => ({ ...current, name: value }))} placeholder="例如：DeepSeek" />
+        <Field label="API Base URL" value={form.api_base} onChange={value => setForm(current => ({ ...current, api_base: value }))} placeholder="https://api.deepseek.com/anthropic" />
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-500">{provider ? 'API Key（留空不修改）' : 'API Key（建议直接填写）'}</label>
+          <input
+            type="password"
+            value={form.api_key}
+            onChange={event => setForm(current => ({ ...current, api_key: event.target.value }))}
+            placeholder="sk-..."
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#d07347]"
+          />
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={form.anthropic_mode}
+            onChange={event => setForm(current => ({ ...current, anthropic_mode: event.target.checked }))}
+          />
+          Anthropic 兼容模式
+        </label>
+      </div>
+      <div className="mt-6 flex justify-end gap-2">
+        <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="rounded-xl bg-[#d07347] px-5 py-2 text-sm font-semibold text-white hover:bg-[#c26438] disabled:bg-slate-300"
+        >
+          {saving ? '保存中...' : provider ? '保存' : '添加'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModelEditorModal({
+  providers,
+  model,
+  onClose,
+  onSaved,
+}: {
+  providers: Provider[];
+  model?: Model;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [providerId, setProviderId] = useState(model?.provider_id ?? providers[0]?.id ?? '');
+  const [name, setName] = useState(model?.name ?? '');
+  const [modelId, setModelId] = useState(model?.model_id ?? '');
+  const [ctxLen, setCtxLen] = useState(String(model?.context_length ?? 128000));
+  const [maxOut, setMaxOut] = useState(String(model?.max_output ?? 8192));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!providerId || !name.trim() || !modelId.trim()) return;
+    setSaving(true);
+    try {
+      if (model) {
+        await api.updateModel({
+          id: model.id,
+          provider_id: providerId,
+          name: name.trim(),
+          model_id: modelId.trim(),
+          context_length: Number.parseInt(ctxLen, 10) || 128000,
+          max_output: Number.parseInt(maxOut, 10) || 8192,
+        });
+      } else {
+        await api.createModel({
+          provider_id: providerId,
+          name: name.trim(),
+          model_id: modelId.trim(),
+          context_length: Number.parseInt(ctxLen, 10) || 128000,
+          max_output: Number.parseInt(maxOut, 10) || 8192,
+        });
+      }
+      onSaved();
+    } catch (error) {
+      alert(`保存失败: ${error}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={model ? '编辑模型' : '添加模型'} onClose={onClose}>
       <div className="space-y-4">
         <div>
-          <label className="text-xs font-medium text-slate-500 mb-1 block">所属厂商</label>
-          <select value={providerId} onChange={e => setProviderId(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-            {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <label className="mb-1 block text-xs font-medium text-slate-500">所属厂商</label>
+          <select
+            value={providerId}
+            onChange={event => setProviderId(event.target.value)}
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#d07347]"
+          >
+            {providers.map(provider => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name} ({provider.id})
+              </option>
+            ))}
           </select>
         </div>
-        <Field label="显示名称" value={name} onChange={setName} placeholder="例: DeepSeek Chat" />
-        <Field label="模型 ID" value={modelId} onChange={setModelId} placeholder="例: deepseek-chat" />
+        <Field label="显示名称" value={name} onChange={setName} placeholder="例如：DeepSeek Chat" />
+        <Field label="模型 ID" value={modelId} onChange={setModelId} placeholder="例如：deepseek-chat" />
         <div className="grid grid-cols-2 gap-3">
           <Field label="上下文长度" value={ctxLen} onChange={setCtxLen} placeholder="128000" />
           <Field label="最大输出" value={maxOut} onChange={setMaxOut} placeholder="8192" />
         </div>
       </div>
-      <div className="flex justify-end gap-2 mt-6">
+      <div className="mt-6 flex justify-end gap-2">
         <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
-        <button onClick={handleSave} disabled={saving}
-          className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300">添加</button>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="rounded-xl bg-[#d07347] px-5 py-2 text-sm font-semibold text-white hover:bg-[#c26438] disabled:bg-slate-300"
+        >
+          {saving ? '保存中...' : model ? '保存' : '添加'}
+        </button>
       </div>
     </Modal>
   );
 }
 
-// ===== 编辑厂商弹窗 =====
-function EditProviderDialog({ provider, onClose, onDone }: { provider: Provider; onClose: () => void; onDone: () => void }) {
-  const [name, setName] = useState(provider.name);
-  const [apiBase, setApiBase] = useState(provider.api_base);
-  const [anthropicMode, setAnthropicMode] = useState(provider.anthropic_mode);
-  const [apiKey, setApiKey] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const handleSave = async () => {
-    if (!name || !apiBase) return;
-    setSaving(true);
-    try {
-      await api.updateProvider({ id: provider.id, name, api_base: apiBase, anthropic_mode: anthropicMode, api_key: apiKey || undefined });
-      onDone();
-    } catch (e) { alert('编辑失败: ' + e); }
-    finally { setSaving(false); }
-  };
-
+function PlaceholderPanel({ title, body }: { title: string; body: string }) {
   return (
-    <Modal title="编辑厂商" onClose={onClose}>
-      <div className="space-y-4">
-        <Field label="名称" value={name} onChange={setName} />
-        <Field label="API Base URL" value={apiBase} onChange={setApiBase} />
-        <div>
-          <label className="text-xs font-medium text-slate-500 mb-1 block">API Key（留空不修改）</label>
-          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-            placeholder="输入新 Key 或留空" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          <input type="checkbox" checked={anthropicMode} onChange={e => setAnthropicMode(e.target.checked)} className="rounded border-slate-300" />
-          Anthropic 兼容模式
-        </label>
-      </div>
-      <div className="flex justify-end gap-2 mt-6">
-        <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">取消</button>
-        <button onClick={handleSave} disabled={saving} className="px-5 py-2 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 disabled:bg-slate-300">保存</button>
-      </div>
-    </Modal>
-  );
-}
-
-// ===== AI 助手 =====
-const STORAGE_KEY = 'ai-toolkit-hub-chat-config';
-
-function AIChatPanel() {
-  const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
-  const [input, setInput] = useState('');
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
-  const [selProvider, setSelProvider] = useState(() => localStorage.getItem(`${STORAGE_KEY}-provider`) || '');
-  const [selModel, setSelModel] = useState(() => localStorage.getItem(`${STORAGE_KEY}-model`) || '');
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(`${STORAGE_KEY}-apikey`) || '');
-  const [sending, setSending] = useState(false);
-  const msgEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    Promise.all([api.listProviders(), api.listModels()]).then(([p, m]) => {
-      setProviders(p); setModels(m);
-    }).catch(() => {});
-  }, []);
-
-  // 持久化配置
-  useEffect(() => {
-    localStorage.setItem(`${STORAGE_KEY}-provider`, selProvider);
-    localStorage.setItem(`${STORAGE_KEY}-model`, selModel);
-    localStorage.setItem(`${STORAGE_KEY}-apikey`, apiKey);
-  }, [selProvider, selModel, apiKey]);
-
-  useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
-
-  const onProviderChange = (pid: string) => {
-    setSelProvider(pid);
-    const avail = models.filter(m => m.provider_id === pid);
-    if (avail.length > 0) setSelModel(avail[0].id);
-  };
-
-  const handleSend = async () => {
-    if (!input.trim() || !selProvider || !selModel || !apiKey) return;
-    const provider = providers.find(p => p.id === selProvider);
-    const model = models.find(m => m.id === selModel);
-    if (!provider || !model) return;
-    const userMsg = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMsg]);
-    setInput('');
-    setSending(true);
-    try {
-      const resp = await api.chatSend({
-        messages: [...messages, userMsg], api_base: provider.api_base,
-        api_key: apiKey, model: model.model_id, anthropic_mode: provider.anthropic_mode,
-      });
-      setMessages(prev => [...prev, { role: 'assistant', content: resp.content }]);
-    } catch (e) {
-      setMessages(prev => [...prev, { role: 'assistant', content: '❌ 请求失败: ' + e }]);
-    } finally { setSending(false); }
-  };
-
-  const availModels = models.filter(m => m.provider_id === selProvider);
-  const ready = selProvider && selModel && apiKey;
-
-  return (
-    <div className="flex flex-col h-[calc(100vh-10rem)] bg-white rounded-2xl border border-slate-200 shadow-sm">
-      <div className="flex gap-3 p-4 border-b border-slate-100 bg-slate-50/50 rounded-t-2xl">
-        <select value={selProvider} onChange={e => onProviderChange(e.target.value)}
-          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="">选择厂商...</option>
-          {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <select value={selModel} onChange={e => setSelModel(e.target.value)}
-          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          disabled={!selProvider}>
-          <option value="">选择模型...</option>
-          {availModels.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-        </select>
-        <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-          placeholder="API Key"
-          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-2xl mx-auto mb-3 shadow-lg shadow-blue-200">💬</div>
-              <p className="text-sm font-medium text-slate-600">AI 助手</p>
-              <p className="text-xs text-slate-400 mt-1">配置会自动保存，下次打开无需重新填写</p>
-            </div>
-          </div>
-        )}
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-              msg.role === 'user' ? 'bg-blue-500 text-white rounded-br-md' : 'bg-slate-100 text-slate-800 rounded-bl-md'
-            }`}>{msg.content}</div>
-          </div>
-        ))}
-        {sending && (
-          <div className="flex justify-start">
-            <div className="bg-slate-100 rounded-2xl rounded-bl-md px-4 py-3 text-sm text-slate-400 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-            </div>
-          </div>
-        )}
-        <div ref={msgEndRef} />
-      </div>
-
-      <div className="p-4 border-t border-slate-100">
-        <div className="flex gap-2">
-          <input type="text" value={input} onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !sending && handleSend()}
-            disabled={!ready || sending}
-            placeholder={!ready ? '请先选择厂商、模型并输入 API Key' : '输入问题，Enter 发送...'}
-            className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50" />
-          <button onClick={handleSend} disabled={!ready || sending}
-            className="px-5 py-2.5 bg-blue-500 text-white rounded-xl text-sm font-medium hover:bg-blue-600 disabled:bg-slate-300 transition-colors shadow-sm">
-            {sending ? '发送中...' : '发送'}
-          </button>
-        </div>
+    <div className="rounded-[32px] border border-[#e3d7c8] bg-[#fbf7ef] p-10 shadow-[0_18px_40px_rgba(92,70,44,0.08)]">
+      <div className="max-w-3xl">
+        <div className="text-3xl font-black text-[#2f241c]">{title}</div>
+        <p className="mt-4 text-lg leading-8 text-[#7d6f63]">{body}</p>
       </div>
     </div>
   );
 }
 
-// ===== 通用组件 =====
-
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-slate-800 mb-5">{title}</h3>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(30,24,18,0.28)] p-6" onClick={onClose}>
+      <div
+        className="w-full max-w-xl rounded-[32px] border border-[#eadfce] bg-[#fffdfa] p-8 shadow-[0_28px_60px_rgba(65,45,25,0.18)]"
+        onClick={event => event.stopPropagation()}
+      >
+        <h3 className="mb-6 text-3xl font-black text-[#2f241c]">{title}</h3>
         {children}
       </div>
     </div>
   );
 }
 
-function StatCard({ icon, label, value, color }: { icon: string; label: string; value: string; color: string }) {
-  const colors: Record<string, string> = {
-    blue: 'from-blue-500 to-indigo-600 shadow-blue-200',
-    green: 'from-emerald-500 to-green-600 shadow-emerald-200',
-    amber: 'from-amber-500 to-orange-600 shadow-amber-200',
-  };
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-      <div className="flex items-center gap-3">
-        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${colors[color]} flex items-center justify-center text-lg shadow-sm`}>{icon}</div>
-        <div>
-          <div className="text-xs text-slate-400">{label}</div>
-          <div className="text-lg font-bold text-slate-800">{value}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Section({ title, count, icon, muted, children }: { title: string; count: number; icon: string; muted?: boolean; children: React.ReactNode }) {
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-sm">{icon}</span>
-        <h3 className={`text-sm font-semibold ${muted ? 'text-slate-400' : 'text-slate-700'}`}>{title}</h3>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${muted ? 'bg-slate-100 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>{count}</span>
-      </div>
-      {children}
+      <label className="mb-1 block text-xs font-medium text-slate-500">{label}</label>
+      <input
+        type="text"
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#d07347]"
+      />
     </div>
   );
 }
 
-function ActionButton({ onClick, label, color, disabled }: { onClick: () => void; label: string; color: string; disabled?: boolean }) {
-  const colors: Record<string, string> = {
-    blue: 'bg-blue-50 text-blue-700 hover:bg-blue-100',
-    emerald: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
-    red: 'bg-red-50 text-red-700 hover:bg-red-100',
-  };
+function SummaryCard({ title, value, detail }: { title: string; value: string; detail: string }) {
   return (
-    <button onClick={onClick} disabled={disabled}
-      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${colors[color] || colors.blue}`}>
-      {label}
+    <div className="rounded-[24px] border border-[#e3d7c8] bg-[#fbf7ef] px-5 py-5 shadow-[0_18px_40px_rgba(92,70,44,0.06)]">
+      <div className="text-sm tracking-[0.22em] text-[#9a8a79]">{title}</div>
+      <div className="mt-3 text-4xl font-black text-[#2f241c]">{value}</div>
+      <div className="mt-2 text-base text-[#7c6c5b]">{detail}</div>
+    </div>
+  );
+}
+
+function StudioToolSection({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-4 flex items-end justify-between gap-4">
+        <div>
+          <h4 className="text-2xl font-black text-[#2f241c]">{title}</h4>
+          <p className="mt-1 text-base text-[#867867]">{subtitle}</p>
+        </div>
+      </div>
+      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>
+    </div>
+  );
+}
+
+function StudioToolCard({
+  tool,
+  detection,
+  meta,
+  active,
+  selectedBindingLabel,
+  onSelect,
+}: {
+  tool: Tool;
+  detection?: DetectionResult;
+  meta: { title: string; icon: string; category: AppCategory; installLabel?: string };
+  active: boolean;
+  selectedBindingLabel: string;
+  onSelect: () => void;
+}) {
+  const isInstalled = !!detection?.installed;
+
+  return (
+    <button
+      onClick={onSelect}
+      className={`min-h-[250px] rounded-[28px] border p-6 text-left shadow-[0_18px_40px_rgba(92,70,44,0.08)] transition ${
+        active
+          ? 'border-[#d07347] bg-[#fff8f1]'
+          : 'border-[#e3d7c8] bg-[#fbf7ef] hover:bg-white'
+      }`}
+    >
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <div className={`mb-4 inline-flex h-14 w-14 items-center justify-center rounded-2xl text-3xl font-black ${
+            isInstalled ? 'bg-[#f3e4d6] text-[#c86d46]' : 'bg-[#ece5dc] text-[#9f9387]'
+          }`}>
+            {meta.icon}
+          </div>
+          <div className="text-2xl font-black text-[#2f241c]">{meta.title}</div>
+          <div className="mt-3 text-lg text-[#7b6c5d]">模型：{selectedBindingLabel}</div>
+        </div>
+        <div className={`rounded-2xl px-4 py-2 text-sm font-semibold ${isInstalled ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+          {toolStatus(detection)}
+        </div>
+      </div>
+      <div className="space-y-2 text-base text-[#8d7d6d]">
+        <div>应用：{trimPath(tool.launch_path ?? tool.launch_command ?? '-')}</div>
+        <div>配置：{trimPath(tool.config_path ?? '-')}</div>
+        <div>版本：{detection?.versions[0]?.replace(/^cli:/, '') ?? '-'}</div>
+      </div>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Tag tone="slate">{appCategoryLabel(meta.category)}</Tag>
+        <Tag tone={SUPPORTED_BINDING_TOOL_IDS.has(tool.id) ? 'green' : 'amber'}>
+          {SUPPORTED_BINDING_TOOL_IDS.has(tool.id) ? '支持配置' : '待接入'}
+        </Tag>
+      </div>
+      {!isInstalled && (
+        <div className="mt-8">
+          <span className="inline-flex rounded-2xl bg-[#ddd2c5] px-5 py-3 text-lg font-semibold text-[#5e5248]">
+            {meta.installLabel ?? 'AI 自动安装'}
+          </span>
+        </div>
+      )}
     </button>
   );
 }
 
-function Badge({ color, children }: { color: string; children: string }) {
-  const colors: Record<string, string> = {
-    purple: 'bg-purple-50 text-purple-600',
-    blue: 'bg-blue-50 text-blue-600',
-    emerald: 'bg-emerald-50 text-emerald-600',
-    amber: 'bg-amber-50 text-amber-600',
+function StudioEmpty({ text }: { text: string }) {
+  return (
+    <div className="col-span-full rounded-[28px] border border-dashed border-[#d9cdbd] bg-[#fbf8f1] px-8 py-10 text-center text-lg text-[#8f7d6a]">
+      {text}
+    </div>
+  );
+}
+
+function Tag({ tone, children }: { tone: 'slate' | 'amber' | 'blue' | 'green' | 'rose'; children: React.ReactNode }) {
+  const styles: Record<string, string> = {
+    slate: 'bg-white/80 text-[#7f7265] border border-[#e5dacc]',
+    amber: 'bg-[#fff1d6] text-[#b27016]',
+    blue: 'bg-[#e5f0ff] text-[#3f72c8]',
+    green: 'bg-[#def6e8] text-[#2f9157]',
+    rose: 'bg-[#ffe5df] text-[#c35c44]',
   };
-  return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${colors[color]}`}>{children}</span>;
-}
 
-function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
-  return (
-    <div>
-      <label className="text-xs font-medium text-slate-500 mb-1 block">{label}</label>
-      <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-    </div>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className="flex items-center justify-center py-24">
-      <div className="text-center">
-        <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-sm text-slate-400">扫描已安装工具...</p>
-      </div>
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return <p className="text-sm text-slate-400 py-8 text-center">{text}</p>;
+  return <span className={`rounded-full px-3 py-1 text-sm font-semibold ${styles[tone]}`}>{children}</span>;
 }

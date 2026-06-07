@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MiniMax Code Vendor Switcher",
+  "productName": "观景",
   "version": "0.1.0",
   "identifier": "com.MiniMax.vendor-switcher",
   "build": {
@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "MiniMax Code Vendor Switcher",
-        "width": 800,
-        "height": 600
+        "title": "观景",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1200,
+        "minHeight": 760
       }
     ],
     "security": {

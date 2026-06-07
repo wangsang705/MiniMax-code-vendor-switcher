@@ -23,13 +23,6 @@ fn dirs_home() -> Option<PathBuf> {
     #[cfg(not(windows))] { std::env::var_os("HOME").map(PathBuf::from) }
 }
 
-fn expand_path(path: &str) -> PathBuf {
-    if path.starts_with("~/") || path == "~" {
-        if let Some(home) = dirs_home() { return home.join(&path[2..]); }
-    }
-    PathBuf::from(path)
-}
-
 // ===== OpenClaw 适配器 =====
 // 配置文件: ~/.openclaw/openclaw.json (JSON5)
 // 模型设置: agents.defaults.model
@@ -55,6 +48,13 @@ pub fn apply_openclaw(provider_name: &str, api_base: &str, model: &str, api_key:
         config["agents"] = serde_json::json!({"defaults": {}});
     }
     config["agents"]["defaults"]["model"] = serde_json::Value::String(model_val);
+    config["agents"]["defaults"]["base_url"] = serde_json::Value::String(api_base.to_string());
+    config["agents"]["defaults"]["api_key"] = serde_json::Value::String(api_key.to_string());
+    config["provider"] = serde_json::json!({
+        "name": provider_name,
+        "base_url": api_base,
+        "api_key": api_key,
+    });
 
     // 写回文件（JSON5 格式，使用 pretty 打印）
     let json_str = serde_json::to_string_pretty(&config)?;
@@ -138,4 +138,3 @@ pub fn apply_nanobot(provider_id: &str, api_base: &str, model: &str, api_key: &s
     std::fs::write(&path, json_str)?;
     Ok(())
 }
-

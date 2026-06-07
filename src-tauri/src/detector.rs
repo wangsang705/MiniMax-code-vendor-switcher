@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use crate::launcher;
 
 /// 检测结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,10 +25,22 @@ pub fn detect_file(path: &str) -> bool {
 
 /// 检测桌面端应用
 pub fn detect_desktop(exe_name: &str) -> Option<PathBuf> {
+    if exe_name == "MiniMax Code" || exe_name == "MiniMax Code.exe" {
+        return launcher::find_minimax_desktop();
+    }
+    if exe_name == "Claude" || exe_name == "Claude.exe" {
+        return launcher::find_claude_desktop();
+    }
+    if exe_name == "Codex" || exe_name == "Codex.exe" {
+        return launcher::find_codex_desktop();
+    }
+    if exe_name == "Gemini" || exe_name == "Gemini.exe" {
+        return launcher::find_gemini_desktop();
+    }
+
     // 常见安装目录
     let candidates = vec![
         // 桌面快捷方式目录
-        dirs_home().map(|h| h.join("Desktop").join("ai编程").join(exe_name).join(format!("{}.exe", exe_name))),
         dirs_home().map(|h| h.join("Desktop").join(exe_name).join(format!("{}.exe", exe_name))),
         // 标准 Program Files
         Some(PathBuf::from(r"C:\Program Files").join(exe_name).join(format!("{}.exe", exe_name))),
@@ -62,6 +75,11 @@ fn which(cmd: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn launch_path_exists(path: &str) -> bool {
+    let expanded = expand_path(path);
+    expanded.is_file()
 }
 
 /// 展开 ~ 为用户目录
@@ -102,6 +120,16 @@ pub fn detect_all_tools(tools: &[crate::db::Tool]) -> Vec<DetectionResult> {
                 if !install_type.is_empty() { install_type.push_str("+"); }
                 install_type.push_str("cli");
                 versions.push(format!("cli:{}", cmd));
+            }
+        }
+
+        if !installed {
+            if let Some(ref launch_path) = tool.launch_path {
+                if launch_path_exists(launch_path) {
+                    installed = true;
+                    install_type = "desktop".to_string();
+                    versions.push(format!("desktop:{}", expand_path(launch_path).display()));
+                }
             }
         }
 

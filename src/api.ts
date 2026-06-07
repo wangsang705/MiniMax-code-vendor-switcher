@@ -41,6 +41,7 @@ export interface Provider {
   name: string;
   api_base: string;
   anthropic_mode: boolean;
+  has_api_key: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -136,5 +137,7 @@ export const api = {
     invoke<Provider>('update_provider', { input }),
   createModel: (input: { provider_id: string; name: string; model_id: string; context_length: number; max_output: number }) =>
     invoke<Model>('create_model', { input }),
-  getProviderKey: (provider_id: string) => invoke<string>('get_provider_key', { providerId: provider_id }),
+  updateModel: (input: { id: string; provider_id: string; name: string; model_id: string; context_length: number; max_output: number }) =>
+    invoke<Model>('update_model', { input }),
+  deleteModel: (id: string) => invoke<void>('delete_model', { id }),
 };
