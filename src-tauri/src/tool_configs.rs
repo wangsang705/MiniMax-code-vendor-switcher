@@ -58,6 +58,17 @@ pub fn codex_config_path() -> Result<PathBuf, ToolConfigError> {
     Ok(home_dir()?.join(".codex").join("config.toml"))
 }
 
+pub fn codex_desktop_config_path() -> Result<PathBuf, ToolConfigError> {
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return Ok(PathBuf::from(appdata).join("Codex").join("config.toml"));
+        }
+    }
+    // Fallback: same as CLI
+    codex_config_path()
+}
+
 pub fn opencode_config_path() -> Result<PathBuf, ToolConfigError> {
     Ok(home_dir()?.join(".opencode").join("config.json"))
 }
@@ -78,24 +89,33 @@ pub fn grok_config_path() -> Result<PathBuf, ToolConfigError> {
     Ok(home_dir()?.join(".grok").join("config.toml"))
 }
 
+/// OpenAI Chat Completions 模式时，清理 api_base 中的 /anthropic 后缀
+fn strip_anthropic_suffix(base: &str) -> String {
+    base.trim_end_matches('/')
+        .trim_end_matches("/anthropic")
+        .to_string()
+}
+
 pub fn apply_codex(
     provider_id: &str,
     provider_name: &str,
     api_base: &str,
     model: &str,
     api_key: &str,
+    anthropic_mode: bool,
 ) -> Result<(), ToolConfigError> {
     let path = codex_config_path()?;
-    apply_codex_to_path(&path, provider_id, provider_name, api_base, model, api_key)
+    apply_codex_to_path(&path, provider_id, provider_name, api_base, model, api_key, anthropic_mode)
 }
 
-fn apply_codex_to_path(
+pub(crate) fn apply_codex_to_path(
     path: &Path,
     provider_id: &str,
     provider_name: &str,
     api_base: &str,
     model: &str,
     api_key: &str,
+    anthropic_mode: bool,
 ) -> Result<(), ToolConfigError> {
     let content = if path.exists() {
         fs::read_to_string(&path)?
@@ -127,9 +147,16 @@ fn apply_codex_to_path(
         .as_table_mut()
         .ok_or_else(|| ToolConfigError::Invalid("provider table 不是 table".to_string()))?;
 
+    let wire_api = if anthropic_mode { "responses" } else { "chat_completions" };
+    let effective_base = if anthropic_mode {
+        api_base.to_string()
+    } else {
+        strip_anthropic_suffix(api_base)
+    };
+
     provider_table.insert("name".to_string(), TomlValue::String(provider_name.to_string()));
-    provider_table.insert("base_url".to_string(), TomlValue::String(api_base.to_string()));
-    provider_table.insert("wire_api".to_string(), TomlValue::String("responses".to_string()));
+    provider_table.insert("base_url".to_string(), TomlValue::String(effective_base));
+    provider_table.insert("wire_api".to_string(), TomlValue::String(wire_api.to_string()));
     provider_table.insert(
         "experimental_bearer_token".to_string(),
         TomlValue::String(api_key.to_string()),
@@ -553,23 +580,47 @@ mod tests {
     }
 
     #[test]
-    fn codex_writes_responses_wire_api() {
+    fn codex_wires_api_by_mode() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
+
+        // Anthropic 模式 → wire_api = "responses"
         apply_codex_to_path(
             &path,
             "deepseek",
             "DeepSeek",
-            "https://api.deepseek.com/v1",
+            "https://api.deepseek.com/anthropic",
             "deepseek-chat",
             "sk-test",
+            true,
         )
         .unwrap();
-
         let parsed: TomlValue = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             parsed["model_providers"]["deepseek"]["wire_api"].as_str(),
             Some("responses")
+        );
+
+        // OpenAI 模式 → wire_api = "chat_completions" + 去掉 /anthropic 后缀
+        let path2 = dir.path().join("config2.toml");
+        apply_codex_to_path(
+            &path2,
+            "deepseek",
+            "DeepSeek",
+            "https://api.deepseek.com/anthropic",
+            "deepseek-chat",
+            "sk-test",
+            false,
+        )
+        .unwrap();
+        let parsed2: TomlValue = toml::from_str(&fs::read_to_string(&path2).unwrap()).unwrap();
+        assert_eq!(
+            parsed2["model_providers"]["deepseek"]["wire_api"].as_str(),
+            Some("chat_completions")
+        );
+        assert_eq!(
+            parsed2["model_providers"]["deepseek"]["base_url"].as_str(),
+            Some("https://api.deepseek.com")  // /anthropic 已被剥离
         );
     }
 

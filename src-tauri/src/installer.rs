@@ -95,20 +95,38 @@ pub fn run_install(tool_id: &str) -> Result<String, String> {
                 }
             }
             InstallMethod::Curl { url } => {
-                let ps_script = format!(
+                // 安全下载：不直接执行远程脚本，下载到临时目录后提示用户
+                let home = dirs_home().ok_or("无法找到用户目录")?;
+                let download_dir = home.join("Downloads").join("Vista-Installers");
+                std::fs::create_dir_all(&download_dir).map_err(|e| format!("创建下载目录失败: {}", e))?;
+
+                let filename = url.split('/').last().unwrap_or("install.sh");
+                let dest = download_dir.join(filename);
+
+                // 使用 PowerShell 的 Invoke-WebRequest 下载（仅下载，不执行）
+                let ps_download = format!(
                     "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
-                     Invoke-WebRequest -Uri '{}' -UseBasicParsing | Select-Object -ExpandProperty Content | Invoke-Expression",
-                    url
+                     Invoke-WebRequest -Uri '{}' -OutFile '{}'",
+                    url.replace('\'', "''"),
+                    dest.display().to_string().replace('\'', "''"),
                 );
                 let output = std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command", &ps_script])
+                    .args(["-NoProfile", "-Command", &ps_download])
                     .output()
-                    .map_err(|e| format!("执行安装脚本失败: {}", e))?;
+                    .map_err(|e| format!("下载安装脚本失败: {}", e))?;
                 if output.status.success() {
-                    return Ok("✅ 安装脚本执行成功".to_string());
+                    return Err(format!(
+                        "✅ 安装脚本已下载到: {}\n请手动打开该文件并按照提示完成安装。\n出于安全考虑，观景不再自动执行远程脚本。",
+                        dest.display()
+                    ));
                 } else {
-                    let err = String::from_utf8_lossy(&output.stderr);
-                    return Err(format!("安装失败: {}", err));
+                    // 如果 PowerShell 下载失败，回退到手动指引
+                    let info = get_install_info(&info.tool_id)
+                        .and_then(|i| i.methods.into_iter().find_map(|m| {
+                            if let InstallMethod::Manual { guide } = m { Some(guide) } else { None }
+                        }))
+                        .unwrap_or_else(|| "请访问该工具的官方网站下载安装程序".to_string());
+                    return Err(format!("自动下载失败，请手动安装: {}", info));
                 }
             }
             InstallMethod::Pip { package } => {

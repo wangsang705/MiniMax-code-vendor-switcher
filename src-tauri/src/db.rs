@@ -165,11 +165,22 @@ pub fn init_db(path: &Path) -> Result<Connection> {
         "#,
     )?;
 
-    migrate_from_v1(&conn).ok();
-    migrate_legacy_provider_keys(&conn).ok();
-    seed_default_tools(&conn).ok();
-    normalize_tool_configs(&conn).ok();
-    seed_default_providers(&conn).ok();
+    // 将所有迁移和种子操作包裹在事务中，保证原子性
+    conn.execute_batch("BEGIN")?;
+    let migration_result = (|| -> Result<()> {
+        migrate_from_v1(&conn)?;
+        migrate_legacy_provider_keys(&conn)?;
+        seed_default_tools(&conn)?;
+        normalize_tool_configs(&conn)?;
+        seed_default_providers(&conn)?;
+        Ok(())
+    })();
+    if migration_result.is_ok() {
+        conn.execute_batch("COMMIT")?;
+    } else {
+        conn.execute_batch("ROLLBACK")?;
+        migration_result?; // 传播错误
+    }
 
     Ok(conn)
 }
@@ -205,7 +216,7 @@ fn seed_default_tools(conn: &Connection) -> Result<()> {
          Some("codex"), None,
          r#"["codex"]"#, r#"[]"#),
         ("codex-desktop", "Codex 桌面端", "desktop",
-         Some("~/.codex/config.toml"), "toml",
+         None, "toml",
          None, None,
          r#"[]"#, r#"["Codex.exe"]"#),
         ("gemini-desktop", "Gemini 桌面端", "desktop",
@@ -262,7 +273,71 @@ fn seed_default_tools(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn seed_default_providers(_conn: &Connection) -> Result<()> {
+fn seed_default_providers(conn: &Connection) -> Result<()> {
+    // 检查是否已有数据
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))
+        .unwrap_or(0);
+    if count > 0 {
+        return Ok(());
+    }
+
+    let now = now_ts();
+
+    // ==================== 插入厂商 ====================
+    let providers = [
+        ("deepseek",  "DeepSeek",          "https://api.deepseek.com/v1",                          true),
+        ("zhipu",     "智谱AI / GLM",      "https://open.bigmodel.cn/api/paas/v4",                  false),
+        ("qwen",      "通义千问 / Qwen",    "https://dashscope.aliyuncs.com/compatible-mode/v1",     false),
+        ("moonshot",  "月之暗面 / Kimi",    "https://api.moonshot.cn/v1",                           false),
+        ("minimax",   "MiniMax",            "https://api.minimax.chat/v1",                          true),
+        ("anthropic", "Anthropic",          "https://api.anthropic.com/v1",                         true),
+    ];
+
+    for &(id, name, api_base, anthropic_mode) in &providers {
+        conn.execute(
+            "INSERT OR IGNORE INTO providers (id, name, api_base, anthropic_mode, api_key, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
+            rusqlite::params![id, name, api_base, anthropic_mode as i32, now, now],
+        )?;
+    }
+
+    // ==================== 插入模型 ====================
+    // (provider_id, model_id, name, context_length, max_output, supports_attachment, supports_reasoning, supports_tool_call, supports_vision)
+    let models: Vec<(&str, &str, &str, i64, i64, i32, i32, i32, i32)> = vec![
+        // ---- DeepSeek ----
+        ("deepseek", "deepseek-chat",     "DeepSeek Chat",     128_000, 8192, 0, 0, 1, 0),
+        ("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", 128_000, 8192, 0, 1, 0, 0),
+        // ---- 智谱AI / GLM ----
+        ("zhipu", "glm-4-plus",   "GLM-4 Plus",   128_000, 8192, 0, 0, 1, 0),
+        ("zhipu", "glm-4v-plus",  "GLM-4V Plus",    8_000, 8192, 0, 0, 0, 1),
+        ("zhipu", "glm-5v-turbo", "GLM-5V Turbo",   8_000, 8192, 0, 0, 1, 1),
+        // ---- 通义千问 / Qwen ----
+        ("qwen", "qwen-plus",  "Qwen Plus",  131_000, 8192, 0, 0, 1, 0),
+        ("qwen", "qwen-turbo", "Qwen Turbo", 1_000_000, 8192, 0, 0, 1, 0),
+        ("qwen", "qwen-max",   "Qwen Max",     32_000, 8192, 0, 1, 1, 0),
+        // ---- 月之暗面 / Kimi ----
+        ("moonshot", "moonshot-v1-128k", "Moonshot V1 128K", 128_000, 8192, 0, 0, 0, 0),
+        ("moonshot", "moonshot-v1-32k",  "Moonshot V1 32K",   32_000, 8192, 0, 0, 0, 0),
+        // ---- MiniMax ----
+        ("minimax", "MiniMax-M3",  "MiniMax M3",  128_000, 8192, 0, 0, 1, 0),
+        ("minimax", "MiniMax-M2.7","MiniMax M2.7",128_000, 8192, 0, 0, 1, 0),
+        // ---- Anthropic ----
+        ("anthropic", "claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 8192, 0, 1, 1, 0),
+        ("anthropic", "claude-haiku-4-5",  "Claude Haiku 4.5",  200_000, 8192, 0, 0, 1, 0),
+    ];
+
+    for &(provider_id, model_id, name, context_length, max_output, attachment, reasoning, tool_call, vision) in &models {
+        let id = format!("{}/{}", provider_id, model_id);
+        conn.execute(
+            "INSERT OR IGNORE INTO models (id, provider_id, name, model_id, context_length, max_output,
+             supports_attachment, supports_reasoning, supports_tool_call, supports_vision, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![id, provider_id, name, model_id, context_length, max_output,
+                attachment, reasoning, tool_call, vision, now, now],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -455,6 +530,22 @@ pub fn update_provider(conn: &Connection, p: &Provider) -> Result<()> {
     Ok(())
 }
 
+pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<Provider>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, api_base, anthropic_mode, created_at, updated_at
+         FROM providers WHERE id = ?1",
+    )?;
+    let mut iter = stmt.query_map([id], |row| {
+        Ok(Provider {
+            id: row.get(0)?, name: row.get(1)?, api_base: row.get(2)?,
+            anthropic_mode: row.get::<_, i32>(3)? != 0,
+            has_api_key: false,
+            created_at: row.get(4)?, updated_at: row.get(5)?,
+        })
+    })?;
+    Ok(iter.next().transpose()?)
+}
+
 // ===== 模型 CRUD =====
 
 pub fn list_models(conn: &Connection) -> Result<Vec<Model>> {
@@ -559,15 +650,23 @@ pub fn get_active_binding(conn: &Connection, tool_id: &str) -> Result<Option<Too
 }
 
 pub fn set_active_binding(conn: &Connection, binding_id: &str, tool_id: &str) -> Result<()> {
+    let now = now_ts();
     conn.execute(
-        "UPDATE tool_bindings SET is_active = 0, updated_at = strftime('%s','now') WHERE tool_id = ?1",
-        [tool_id],
+        "UPDATE tool_bindings SET is_active = 0, updated_at = ?1 WHERE tool_id = ?2",
+        rusqlite::params![now, tool_id],
     )?;
     conn.execute(
-        "UPDATE tool_bindings SET is_active = 1, updated_at = strftime('%s','now') WHERE id = ?1",
-        [binding_id],
+        "UPDATE tool_bindings SET is_active = 1, updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, binding_id],
     )?;
     Ok(())
+}
+
+fn now_ts() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 pub fn upsert_binding(conn: &Connection, b: &ToolBinding) -> Result<()> {
@@ -619,10 +718,12 @@ pub fn delete_bindings_by_tool(conn: &Connection, tool_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn delete_provider_cascade(conn: &Connection, provider_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM tool_bindings WHERE provider_id = ?1", [provider_id])?;
-    conn.execute("DELETE FROM models WHERE provider_id = ?1", [provider_id])?;
-    conn.execute("DELETE FROM providers WHERE id = ?1", [provider_id])?;
+pub fn delete_provider_cascade(conn: &mut Connection, provider_id: &str) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM tool_bindings WHERE provider_id = ?1", [provider_id])?;
+    tx.execute("DELETE FROM models WHERE provider_id = ?1", [provider_id])?;
+    tx.execute("DELETE FROM providers WHERE id = ?1", [provider_id])?;
+    tx.commit()?;
     Ok(())
 }
 

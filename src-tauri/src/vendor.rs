@@ -10,7 +10,7 @@ pub fn presets() -> Vec<VendorPreset> {
         VendorPreset {
             id: "minimax",
             name: "MiniMax",
-            api_base: "https://api.MiniMax.com",
+            api_base: "https://api.minimaxi.com",
             default_model: "MiniMax-M3",
         },
         VendorPreset {
@@ -37,6 +37,12 @@ pub fn presets() -> Vec<VendorPreset> {
             name: "Qwen (通义千问)",
             api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1",
             default_model: "qwen-plus",
+        },
+        VendorPreset {
+            id: "modelverse",
+            name: "ModelVerse (智谱)",
+            api_base: "https://api.modelverse.cn/v1",
+            default_model: "glm-5v-turbo",
         },
     ]
 }

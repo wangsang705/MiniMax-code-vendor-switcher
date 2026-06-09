@@ -1,4 +1,16 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .expect("创建 HTTP 客户端失败")
+    })
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -51,7 +63,7 @@ async fn chat_anthropic(req: ChatRequest) -> Result<ChatResponse, String> {
         }).collect::<Vec<_>>(),
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .post(&url)
         .header("x-api-key", &req.api_key)
@@ -99,7 +111,7 @@ async fn chat_openai(req: ChatRequest) -> Result<ChatResponse, String> {
         }).collect::<Vec<_>>(),
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", req.api_key))

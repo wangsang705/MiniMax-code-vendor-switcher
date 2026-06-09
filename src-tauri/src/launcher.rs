@@ -26,8 +26,13 @@ pub fn find_codex_desktop() -> Option<PathBuf> {
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let base = PathBuf::from(local_app_data);
         candidates.push(base.join("Programs").join("Codex").join("Codex.exe"));
-        candidates.push(base.join("Programs").join("Codex++").join("codex-plus-plus.exe"));
         candidates.push(base.join("OpenAI").join("Codex").join("codex.exe"));
+    }
+    // Scoop install path
+    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+        let base = PathBuf::from(user_profile);
+        candidates.push(base.join("scoop").join("apps").join("codex").join("current").join("Codex.exe"));
+        candidates.push(base.join("scoop").join("apps").join("codex-cli").join("current").join("Codex.exe"));
     }
     candidates.into_iter().find(|path| path.is_file())
 }
@@ -124,16 +129,44 @@ pub fn launch_minimax_desktop() -> std::io::Result<u32> {
     let path = find_minimax_desktop().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "MiniMax Code desktop app not found")
     })?;
-    let child = Command::new(path).spawn()?;
-    Ok(child.id())
+    spawn_or_elevate(path)
 }
 
 fn launch_specific(path: Option<PathBuf>, label: &str) -> std::io::Result<u32> {
     let binary = path.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, format!("{label} not found"))
     })?;
-    let child = Command::new(binary).spawn()?;
-    Ok(child.id())
+    spawn_or_elevate(binary)
+}
+
+/// 尝试启动进程，如果遇到 UAC 权限问题则自动请求提权
+fn spawn_or_elevate(path: PathBuf) -> std::io::Result<u32> {
+    // 先直接尝试 spawn（普通情况）
+    match Command::new(&path).spawn() {
+        Ok(child) => return Ok(child.id()),
+        Err(e) => {
+            // Windows 上错误码 740 = ERROR_ELEVATION_REQUIRED
+            if cfg!(windows) && e.raw_os_error() == Some(740) {
+                // 忽略该错误，继续走提权路径
+            } else {
+                return Err(e);
+            }
+        }
+    }
+
+    // 需要提权：通过 PowerShell Start-Process -Verb RunAs 触发 UAC 弹窗
+    let path_str = path.to_string_lossy();
+    let ps_cmd = format!("Start-Process '{}' -Verb RunAs", path_str.replace('\'', "''"));
+    let ps_child = Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_cmd])
+        .spawn()
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("请求管理员权限失败: {}。可尝试右键以管理员身份运行此工具。", e),
+            )
+        })?;
+    Ok(ps_child.id())
 }
 
 pub fn launch_claude_desktop() -> std::io::Result<u32> {
@@ -227,25 +260,25 @@ pub fn launch_claude() -> std::io::Result<u32> {
     let lower = path_str.to_lowercase();
 
     // 根据文件扩展名选择解释器
-    let mut cmd = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+    let cmd = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
         let mut c = Command::new("cmd");
         c.arg("/c").arg(&path);
-        c
+        // cmd /c 启动的 .bat 由 cmd 负责，不需要额外提权处理
+        c.spawn().map(|child| child.id())
     } else if lower.ends_with(".sh") {
         let mut c = Command::new("bash");
         c.arg(&path);
-        c
+        c.spawn().map(|child| child.id())
     } else if lower.ends_with(".exe") {
-        Command::new(&path)
+        spawn_or_elevate(path)
     } else {
         // 无后缀脚本
         let mut c = Command::new("bash");
         c.arg(&path);
-        c
+        c.spawn().map(|child| child.id())
     };
 
-    let child = cmd.spawn()?;
-    Ok(child.id())
+    cmd
 }
 
 #[cfg(test)]
