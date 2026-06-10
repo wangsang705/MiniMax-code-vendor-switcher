@@ -539,6 +539,70 @@ pub fn apply_grok(
     write_atomic(&path, &serialized)
 }
 
+pub fn apply_coffee(
+    provider_id: &str,
+    provider_name: &str,
+    api_base: &str,
+    model: &str,
+    api_key: &str,
+    anthropic_mode: bool,
+) -> Result<(), ToolConfigError> {
+    let path = coffee_config_path()?;
+    apply_coffee_to_path(&path, provider_id, provider_name, api_base, model, api_key, anthropic_mode)
+}
+
+pub fn coffee_config_path() -> Result<PathBuf, ToolConfigError> {
+    Ok(home_dir()?.join(".coffee-cli").join("config.json"))
+}
+
+fn apply_coffee_to_path(
+    path: &Path,
+    provider_id: &str,
+    provider_name: &str,
+    api_base: &str,
+    model: &str,
+    api_key: &str,
+    anthropic_mode: bool,
+) -> Result<(), ToolConfigError> {
+    let content = if path.exists() {
+        fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let mut root = if content.trim().is_empty() {
+        JsonValue::Object(JsonMap::new())
+    } else {
+        serde_json::from_str::<JsonValue>(&content)?
+    };
+
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| ToolConfigError::Invalid("Coffee CLI 配置根节点不是 object".to_string()))?;
+
+    root_obj.insert("provider".to_string(), JsonValue::String(provider_id.to_string()));
+    root_obj.insert("model".to_string(), JsonValue::String(model.to_string()));
+    root_obj.insert("apiKey".to_string(), JsonValue::String(api_key.to_string()));
+    root_obj.insert("baseUrl".to_string(), JsonValue::String(api_base.to_string()));
+
+    let env_obj = root_obj
+        .entry("env".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .ok_or_else(|| ToolConfigError::Invalid("env 不是 object".to_string()))?;
+
+    if anthropic_mode {
+        env_obj.insert("ANTHROPIC_BASE_URL".to_string(), JsonValue::String(api_base.to_string()));
+        env_obj.insert("ANTHROPIC_AUTH_TOKEN".to_string(), JsonValue::String(api_key.to_string()));
+        env_obj.insert("ANTHROPIC_MODEL".to_string(), JsonValue::String(model.to_string()));
+    } else {
+        env_obj.insert("OPENAI_API_KEY".to_string(), JsonValue::String(api_key.to_string()));
+        env_obj.insert("OPENAI_BASE_URL".to_string(), JsonValue::String(api_base.to_string()));
+    }
+
+    let serialized = serde_json::to_string_pretty(&root)?;
+    write_atomic(&path, &serialized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -216,23 +216,23 @@ mod tests {
  // 先创建一个包含 nexus 的完整配置
  let initial = r#"logLevel: info
 provider:
- minimax:
- name: MiniMax
- npm: '@ai-sdk/anthropic'
- models:
- MiniMax-M3:
- name: MiniMax-M3
- whitelist:
- - MiniMax-M3
- options:
- apiKey: sk-xxx
- baseURL: https://agent.minimaxi.com/mavis/api/v1/llm/v1
+  minimax:
+    name: MiniMax
+    npm: '@ai-sdk/anthropic'
+    models:
+      MiniMax-M3:
+        name: MiniMax-M3
+    whitelist:
+      - MiniMax-M3
+    options:
+      apiKey: sk-xxx
+      baseURL: https://agent.minimaxi.com/mavis/api/v1/llm/v1
 defaultModel: minimax/MiniMax-M3
 nexus:
- enabled: true
- model:
- providerID: minimax
- modelID: MiniMax-M3
+  enabled: true
+  model:
+    providerID: minimax
+    modelID: MiniMax-M3
 "#;
  fs::write(&path, initial).unwrap();
 
