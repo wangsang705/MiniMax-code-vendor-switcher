@@ -9,6 +9,7 @@ mod aider;
 mod claude;
 mod coffee;
 mod codex;
+mod cursor;
 mod grok;
 mod hermes;
 mod kimi;
@@ -25,6 +26,7 @@ pub use aider::AiderWriter;
 pub use claude::{ClaudeCliWriter, ClaudeDesktopWriter};
 pub use coffee::CoffeeWriter;
 pub use codex::{CodexDesktopWriter, CodexWriter};
+pub use cursor::CursorWriter;
 pub use grok::GrokWriter;
 pub use hermes::HermesWriter;
 pub use kimi::KimiWriter;
@@ -136,6 +138,7 @@ fn create_default_registry() -> WriterRegistry {
     reg.register(&["aider-cli"], Arc::new(AiderWriter));
     reg.register(&["grok-build"], Arc::new(GrokWriter));
     reg.register(&["coffee-cli"], Arc::new(CoffeeWriter));
+    reg.register(&["cursor-desktop"], Arc::new(CursorWriter));
     reg.register(&["kimi-cli"], Arc::new(KimiWriter));
     reg.register(&["openclaw"], Arc::new(OpenClawWriter));
     reg.register(&["hermes-agent"], Arc::new(HermesWriter));
@@ -179,7 +182,8 @@ mod tests {
         assert!(ids.contains(&"nanobot".to_string()));
         assert!(ids.contains(&"minimax-code-desktop".to_string()));
         assert!(ids.contains(&"coffee-cli".to_string()));
-        assert_eq!(ids.len(), 15);
+        assert!(ids.contains(&"cursor-desktop".to_string()));
+        assert_eq!(ids.len(), 16);
     }
 
     #[test]
