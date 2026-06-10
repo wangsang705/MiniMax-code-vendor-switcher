@@ -97,50 +97,53 @@ pub fn launch_tool(state: State<AppState>, tool_id: String) -> Result<u32, Strin
     drop(conn);
 
     // 桌面版——优先注入环境变量
-    if tool.id == "codex-desktop" {
-        if let Some((base_url, api_key, anthropic_mode, _model)) = provider_info {
-            let exe = launcher::find_codex_desktop().ok_or("未找到 Codex Desktop")?;
-            let mut cmd = std::process::Command::new(&exe);
-            if anthropic_mode {
-                cmd.env("ANTHROPIC_BASE_URL", &base_url);
-                cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
-            } else {
-                cmd.env("OPENAI_API_KEY", &api_key);
-                cmd.env("OPENAI_BASE_URL", &base_url);
+    // 先尝试专用查找函数，失败后走通用兜底检测
+    let find_desktop = |tool_id: &str| -> Option<PathBuf> {
+        let specialized = match tool_id {
+            "codex-desktop" => launcher::find_codex_desktop(),
+            "minimax-code-desktop" => launcher::find_minimax_desktop(),
+            "claude-desktop" => launcher::find_claude_desktop(),
+            "gemini-desktop" => launcher::find_gemini_desktop(),
+            _ => None,
+        };
+        if specialized.is_some() {
+            return specialized;
+        }
+        // 兜底：从 detection_files 走综合检测（注册表+Start Menu+where.exe+递归扫描）
+        let files: Vec<String> =
+            serde_json::from_str(&tool.detection_files).unwrap_or_default();
+        for file in &files {
+            let exe_name = file.trim_end_matches(".exe");
+            if let Some(path) = crate::detector::detect_desktop(exe_name) {
+                return Some(path);
             }
+        }
+        None
+    };
+
+    // 桌面工具——优先注入环境变量
+    if tool.category == "desktop" {
+        if let Some((base_url, api_key, anthropic_mode, _model)) = provider_info {
+            if let Some(exe) = find_desktop(&tool.id) {
+                let mut cmd = std::process::Command::new(&exe);
+                if anthropic_mode {
+                    cmd.env("ANTHROPIC_BASE_URL", &base_url);
+                    cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
+                } else {
+                    cmd.env("OPENAI_API_KEY", &api_key);
+                    cmd.env("OPENAI_BASE_URL", &base_url);
+                }
+                let child = spawn_or_elevate(&mut cmd)?;
+                return Ok(child.id());
+            }
+        }
+        // 无绑定信息或查找失败，仍然尝试启动（无环境变量）
+        if let Some(exe) = find_desktop(&tool.id) {
+            let mut cmd = std::process::Command::new(&exe);
             let child = spawn_or_elevate(&mut cmd)?;
             return Ok(child.id());
         }
-        return launcher::launch_codex_desktop().map_err(|e| format!("启动失败: {}", e));
-    }
-    if tool.id == "minimax-code-desktop" {
-        if let Some((base_url, api_key, anthropic_mode, _model)) = provider_info {
-            let exe = launcher::find_minimax_desktop().ok_or("未找到 MiniMax")?;
-            let mut cmd = std::process::Command::new(&exe);
-            if anthropic_mode {
-                cmd.env("ANTHROPIC_BASE_URL", &base_url);
-                cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
-            }
-            let child = spawn_or_elevate(&mut cmd)?;
-            return Ok(child.id());
-        }
-        return launcher::launch_minimax_desktop().map_err(|e| format!("启动失败: {}", e));
-    }
-    if tool.id == "claude-desktop" {
-        if let Some((base_url, api_key, anthropic_mode, _model)) = provider_info {
-            let exe = launcher::find_claude_desktop().ok_or("未找到 Claude")?;
-            let mut cmd = std::process::Command::new(&exe);
-            if anthropic_mode {
-                cmd.env("ANTHROPIC_BASE_URL", &base_url);
-                cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
-            }
-            let child = spawn_or_elevate(&mut cmd)?;
-            return Ok(child.id());
-        }
-        return launcher::launch_claude_desktop().map_err(|e| format!("启动失败: {}", e));
-    }
-    if tool.id == "gemini-desktop" {
-        return launcher::launch_gemini_desktop().map_err(|e| format!("启动失败: {}", e));
+        return Err(format!("未找到 {}，请确认已安装", tool.name));
     }
 
     // CLI 工具：注入环境变量启动
