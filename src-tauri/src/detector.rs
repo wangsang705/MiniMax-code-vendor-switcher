@@ -24,23 +24,26 @@ pub fn detect_file(path: &str) -> bool {
     expanded.is_file()
 }
 
-/// 使用 Windows `where.exe` 命令搜索可执行文件（比手动遍历 PATH 更全）
+/// 使用 Windows `where.exe` 搜索可执行文件
+/// 优先匹配 .exe 后缀（避免把 npm CLI 脚本误认为桌面应用）
 #[cfg(windows)]
 fn where_exe(exe_name: &str) -> Option<PathBuf> {
+    // 先尝试 .exe 精确匹配（桌面应用一定是 exe）
+    let exe_candidate = format!("{}.exe", exe_name);
     let output = Command::new("where")
-        .arg(exe_name)
+        .arg(&exe_candidate)
         .output()
         .ok()?;
-    if !output.status.success() {
-        return None;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(line) = stdout.lines().next() {
+            let path = PathBuf::from(line.trim());
+            if path.is_file() && path.extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false) {
+                return Some(path);
+            }
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let first_line = stdout.lines().next()?.trim().to_string();
-    if first_line.is_empty() {
-        return None;
-    }
-    let path = PathBuf::from(&first_line);
-    if path.is_file() { Some(path) } else { None }
+    None
 }
 
 /// 在 Start Menu 中搜索工具的快捷方式，解析出实际 exe 路径
