@@ -235,7 +235,7 @@ fn seed_default_tools(conn: &Connection) -> Result<()> {
         ("trae-desktop", "Trae", "desktop",
          None, "json",
          None, None,
-         r#"[]"#, r#"["Trae.exe"]"#),
+         r#"[]"#, r#"["Trae.exe", "Trae CN.exe"]"#),
         ("zed-desktop", "Zed", "desktop",
          None, "json",
          None, None,
