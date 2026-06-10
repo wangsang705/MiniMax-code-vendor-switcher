@@ -176,6 +176,18 @@ pub fn launch_tool(state: State<AppState>, tool_id: String) -> Result<u32, Strin
         return Ok(spawn_or_elevate(&mut cmd)?.id());
     }
 
+    // 兜底：桌面工具没有固定启动路径 -> 从 detection_files 找 exe 启动
+    if tool.category == "desktop" {
+        let files: Vec<String> = serde_json::from_str(&tool.detection_files).unwrap_or_default();
+        for file in &files {
+            let exe_name = file.trim_end_matches(".exe");
+            if let Some(path) = crate::detector::detect_desktop(exe_name) {
+                let mut cmd = std::process::Command::new(&path);
+                return Ok(spawn_or_elevate(&mut cmd)?.id());
+            }
+        }
+    }
+
     Err(format!("{} 没有配置启动方式", tool.name))
 }
 
