@@ -10,6 +10,7 @@ mod claude;
 mod coffee;
 mod codex;
 mod cursor;
+mod gemini;
 mod grok;
 mod hermes;
 mod kimi;
@@ -18,6 +19,9 @@ mod nanobot;
 mod openclaw;
 mod opencode;
 mod qwen;
+mod trae;
+mod windsurf;
+mod zed;
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -27,6 +31,7 @@ pub use claude::{ClaudeCliWriter, ClaudeDesktopWriter};
 pub use coffee::CoffeeWriter;
 pub use codex::{CodexDesktopWriter, CodexWriter};
 pub use cursor::CursorWriter;
+pub use gemini::GeminiDesktopWriter;
 pub use grok::GrokWriter;
 pub use hermes::HermesWriter;
 pub use kimi::KimiWriter;
@@ -35,6 +40,9 @@ pub use nanobot::NanoBotWriter;
 pub use openclaw::OpenClawWriter;
 pub use opencode::OpenCodeWriter;
 pub use qwen::QwenWriter;
+pub use trae::TraeWriter;
+pub use windsurf::WindsurfWriter;
+pub use zed::ZedWriter;
 
 // ---------------------------------------------------------------------------
 // WriteContext
@@ -139,6 +147,10 @@ fn create_default_registry() -> WriterRegistry {
     reg.register(&["grok-build"], Arc::new(GrokWriter));
     reg.register(&["coffee-cli"], Arc::new(CoffeeWriter));
     reg.register(&["cursor-desktop"], Arc::new(CursorWriter));
+    reg.register(&["gemini-desktop"], Arc::new(GeminiDesktopWriter));
+    reg.register(&["windsurf-desktop"], Arc::new(WindsurfWriter));
+    reg.register(&["trae-desktop"], Arc::new(TraeWriter));
+    reg.register(&["zed-desktop"], Arc::new(ZedWriter));
     reg.register(&["kimi-cli"], Arc::new(KimiWriter));
     reg.register(&["openclaw"], Arc::new(OpenClawWriter));
     reg.register(&["hermes-agent"], Arc::new(HermesWriter));
@@ -183,7 +195,11 @@ mod tests {
         assert!(ids.contains(&"minimax-code-desktop".to_string()));
         assert!(ids.contains(&"coffee-cli".to_string()));
         assert!(ids.contains(&"cursor-desktop".to_string()));
-        assert_eq!(ids.len(), 16);
+        assert!(ids.contains(&"gemini-desktop".to_string()));
+        assert!(ids.contains(&"windsurf-desktop".to_string()));
+        assert!(ids.contains(&"trae-desktop".to_string()));
+        assert!(ids.contains(&"zed-desktop".to_string()));
+        assert_eq!(ids.len(), 20);
     }
 
     #[test]
