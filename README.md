@@ -6,12 +6,13 @@
 
 ## 功能
 
-- **5 个内置厂商预设**：MiniMax、DeepSeek、Kimi（月之暗面）、智谱 GLM、Qwen（通义千问）
+- **6 个内置厂商预设**：MiniMax、DeepSeek、Kimi（月之暗面）、智谱 GLM、Qwen（通义千问）、Anthropic
 - **任意 OpenAI 兼容自定义端点**：在添加厂商时选"自定义 OpenAI 兼容端点"
-- **一键切换**：写入 `~/.claude/settings.json` 的 `env` 字段，原文件自动备份
-- **API Key 系统 Keyring 加密存储**：Windows Credential Manager / macOS Keychain / Linux Secret Service
+- **一键切换**：自动为 18+ 个 AI 工具生成专属格式的配置文件
+- **API Key 系统 Keyring 加密存储**：Windows Credential Manager
 - **原子写**：临时文件 + rename，避免半写状态
-- **一键启动 MiniMax Code CLI**
+- **智能扫描**：自动检测本地已安装的 18+ AI 编码工具 + 4 个 AI IDE
+- **一键启动**：CLI 工具 + 桌面端 + IDE 均可直接启动
 
 ## 快速开始
 
