@@ -27,6 +27,16 @@ pub fn find_codex_desktop() -> Option<PathBuf> {
         let base = PathBuf::from(local_app_data);
         candidates.push(base.join("Programs").join("Codex").join("Codex.exe"));
         candidates.push(base.join("OpenAI").join("Codex").join("codex.exe"));
+        // OpenAI Codex 桌面版实际路径: ...\bin\<hash>\codex.exe
+        let codex_bin = base.join("OpenAI").join("Codex").join("bin");
+        if let Ok(entries) = std::fs::read_dir(&codex_bin) {
+            for entry in entries.flatten() {
+                let exe = entry.path().join("codex.exe");
+                if exe.is_file() {
+                    candidates.push(exe);
+                }
+            }
+        }
     }
     // Scoop install path
     if let Some(user_profile) = std::env::var_os("USERPROFILE") {
