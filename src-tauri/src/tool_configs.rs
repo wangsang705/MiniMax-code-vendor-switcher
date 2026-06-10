@@ -558,7 +558,7 @@ pub fn coffee_config_path() -> Result<PathBuf, ToolConfigError> {
 fn apply_coffee_to_path(
     path: &Path,
     provider_id: &str,
-    provider_name: &str,
+    _provider_name: &str,
     api_base: &str,
     model: &str,
     api_key: &str,
